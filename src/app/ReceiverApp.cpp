@@ -1,5 +1,6 @@
 #include "ReceiverApp.hpp"
 #include "../service/AdcService.h"
+#include "../service/DacService.h"
 #include <math.h>
 
 ReceiverApp::ReceiverApp(SharedSonarData& sharedData)
@@ -8,6 +9,7 @@ ReceiverApp::ReceiverApp(SharedSonarData& sharedData)
 
 void ReceiverApp::begin() {
     AdcService::init();
+    DacService::init();
     initDSPCoefficients();
 }
 
@@ -138,32 +140,25 @@ void ReceiverApp::performPulseDopplerFFT() {
 }
 
 void ReceiverApp::run() {
-    bool hasTrigger = false;
-    
-    // Non-blocking cross-core check of trigger flag
+    // Wait indefinitely for a task notification (trigger signal) from Core 0
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    // Reset trigger Tx flag for consistency
     taskENTER_CRITICAL(&_sharedData.spinlock);
-    if (_sharedData.triggerTx) {
-        _sharedData.triggerTx = false;
-        hasTrigger = true;
-    }
+    _sharedData.triggerTx = false;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-    if (hasTrigger) {
-        // High-Speed ADC1 sampling: samples at sample rate
-        // Buffers directly into our shared sonar data structure
-        AdcService::sampleBuffer((uint16_t*)_sharedData.adcBuffer, Constant::ADC_SAMPLES);
- 
-        // Temporary bypass of DSP pipelines for raw loopback debugging
-        // performIQDemodulation((const uint16_t*)_sharedData.adcBuffer);
-        // performMatchedFiltering();
-        // performPulseDopplerFFT();
- 
-        // Signal to Core 0 that sampling is finished
-        taskENTER_CRITICAL(&_sharedData.spinlock);
-        _sharedData.processingDone = true;
-        taskEXIT_CRITICAL(&_sharedData.spinlock);
-    } else {
-        // Fast polling response: keep latency under RX_POLL_DELAY_US microseconds to align with the Tx pulse
-        delayMicroseconds(Constant::RX_POLL_DELAY_US);
-    }
+    // High-Speed ADC1 sampling: samples at sample rate
+    // Buffers directly into our shared sonar data structure
+    AdcService::sampleBuffer((uint16_t*)_sharedData.adcBuffer, Constant::ADC_SAMPLES, _sharedData.txBuffer, _sharedData.txPulseLen, _sharedData.adcReady);
+
+    // Temporary bypass of DSP pipelines for raw loopback debugging
+    // performIQDemodulation((const uint16_t*)_sharedData.adcBuffer);
+    // performMatchedFiltering();
+    // performPulseDopplerFFT();
+
+    // Signal to Core 0 that sampling is finished
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    _sharedData.processingDone = true;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
 }

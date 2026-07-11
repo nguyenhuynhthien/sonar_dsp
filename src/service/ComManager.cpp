@@ -1,7 +1,7 @@
 #include "ComManager.h"
 
 ComManager::ComManager(const char* ssid, const char* password, const char* hostName, uint16_t port)
-    : _ssid(ssid), _password(password), _hostName(hostName), _port(port), _remotePort(0), _isStreaming(false) {
+    : _ssid(ssid), _password(password), _hostName(hostName), _port(port), _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE) {
 }
 
 void ComManager::begin() {
@@ -73,6 +73,12 @@ void ComManager::update() {
             } else if (command == "stop") {
                 _isStreaming = false;
                 Serial.println("Stop streaming registered.");
+            } else if (command == "cfg:single") {
+                _pulseType = PULSE_SINGLE;
+                Serial.println("Pulse config changed: Single");
+            } else if (command == "cfg:barker13") {
+                _pulseType = PULSE_BARKER13;
+                Serial.println("Pulse config changed: Barker13");
             }
         }
     }

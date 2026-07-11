@@ -9,12 +9,18 @@
 
 class ComManager {
 public:
+    enum PulseType {
+        PULSE_SINGLE,
+        PULSE_BARKER13
+    };
+
     ComManager(const char* ssid, const char* password, const char* hostName, uint16_t port = Constant::DEFAULT_PORT);
     
     void begin();
     void update();
     bool isStreaming();
     void sendFrame(uint16_t frameId, const uint16_t* samples, size_t size);
+    PulseType getPulseType() const { return _pulseType; }
 
 private:
     const char* _ssid;
@@ -26,6 +32,7 @@ private:
     IPAddress _remoteIp;
     uint16_t _remotePort;
     bool _isStreaming;
+    PulseType _pulseType;
 };
 
 #endif // COM_MANAGER_H

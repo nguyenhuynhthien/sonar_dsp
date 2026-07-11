@@ -45,3 +45,21 @@ uint16_t AdcSignal::readRaw() {
     // Return the 12-bit data (bits 0-11)
     return REG_READ(SENS_SAR_MEAS_START1_REG) & 0xFFF;
 }
+
+void AdcSignal::startConversion() {
+    REG_CLR_BIT(SENS_SAR_MEAS_START1_REG, SENS_MEAS1_START_SAR);
+    REG_SET_BIT(SENS_SAR_MEAS_START1_REG, SENS_MEAS1_START_SAR);
+}
+
+uint16_t AdcSignal::readResult() {
+    // Check if the done bit is high. It should be high since conversion is fast,
+    // but in case it's not, we do a very short spin wait.
+    uint32_t spinCount = 0;
+    while (!(REG_READ(SENS_SAR_MEAS_START1_REG) & SENS_MEAS1_DONE_SAR)) {
+        spinCount++;
+        if (spinCount > 5000) {
+            return 0xFFFF;
+        }
+    }
+    return REG_READ(SENS_SAR_MEAS_START1_REG) & 0xFFF;
+}

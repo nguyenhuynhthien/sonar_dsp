@@ -8,8 +8,10 @@
 SharedSonarData sharedData = {
     .triggerTx = false,
     .processingDone = false,
+    .adcReady = false,
     .adcBuffer = {0},
-    .spinlock = portMUX_INITIALIZER_UNLOCKED
+    .spinlock = portMUX_INITIALIZER_UNLOCKED,
+    .rxTaskHandle = nullptr
 };
 
 // WiFi SSID, password and MDNS hostname
@@ -61,7 +63,7 @@ void setup() {
         Constant::TASK_STACK_SIZE,
         nullptr,
         Constant::TASK_PRIORITY,
-        nullptr,
+        &sharedData.rxTaskHandle,
         1   // Pinned to Core 1
     );
 }

@@ -24,6 +24,24 @@ namespace Constant {
         127, 254, 127, 0,   127, 254, 127, 0
     };
 
+    // Pre-calculated Barker 13 waveform (13 chips, 2 cycles of 4 samples/cycle per chip = 8 samples/chip, total 104 samples)
+    constexpr size_t BARKER13_PULSE_LEN = 104;
+    constexpr uint8_t BARKER13_PULSE_WAVE[BARKER13_PULSE_LEN] = {
+        127, 254, 127, 0, 127, 254, 127, 0,
+        127, 254, 127, 0, 127, 254, 127, 0,
+        127, 254, 127, 0, 127, 254, 127, 0,
+        127, 254, 127, 0, 127, 254, 127, 0,
+        127, 254, 127, 0, 127, 254, 127, 95,
+        127, 95, 127, 254, 127, 0, 127, 254,
+        127, 0, 127, 254, 127, 0, 127, 159,
+        127, 159, 127, 0, 127, 254, 127, 0,
+        127, 254, 127, 0, 127, 254, 127, 95,
+        127, 95, 127, 254, 127, 0, 127, 159,
+        127, 159, 127, 0, 127, 254, 127, 95,
+        127, 95, 127, 254, 127, 0, 127, 159,
+        127, 159, 127, 0, 127, 254, 127, 0
+    };
+
     // Timing & Timeouts
     constexpr uint32_t RX_POLL_DELAY_US = 50;
     constexpr uint32_t TX_RESPONSE_TIMEOUT_MS = 100;

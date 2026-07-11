@@ -1,4 +1,5 @@
 #include "AdcService.h"
+#include "DacService.h"
 #include "../driver/AdcSignal.h"
 #include <Constant.hpp>
 
@@ -13,12 +14,20 @@ void AdcService::init() {
     AdcSignal::init();
 }
 
-void AdcService::sampleBuffer(uint16_t* buffer, size_t size) {
+void AdcService::sampleBuffer(uint16_t* buffer, size_t size, const uint8_t* txBuffer, size_t txPulseLen, volatile bool& adcReady) {
     uint32_t cpu_freq_mhz = ESP.getCpuFreqMHz();
     // Cycles per sample = CPU frequency * cycle factor
     uint32_t cycles_per_sample = (uint32_t)(cpu_freq_mhz * Constant::CPU_CYCLES_PER_SAMPLE_FACTOR);
 
+    // Read start cycle count first to set the absolute reference
     uint32_t start_cycles = get_ccount();
+
+    // Start the first conversion for i = 0
+    AdcSignal::startConversion();
+
+    // Signal Core 0 that we have started the first conversion and are ready!
+    adcReady = true;
+
     bool stuck = false;
     
     for (size_t i = 0; i < size; ++i) {
@@ -27,7 +36,22 @@ void AdcService::sampleBuffer(uint16_t* buffer, size_t size) {
             // Spin until timing is reached (overflow-safe)
         }
         
-        uint16_t val = AdcSignal::readRaw();
+        // 1. Read result of the conversion that was triggered in the previous step
+        uint16_t val = AdcSignal::readResult();
+        
+        // 2. Trigger the next conversion immediately so it runs in parallel with the rest of the loop
+        if (i < size - 1) {
+            AdcSignal::startConversion();
+        }
+
+        // 3. Write to DAC for synchronous pulse output
+        if (i < txPulseLen) {
+            DacService::writeSample(txBuffer[i]);
+        } else if (i == txPulseLen) {
+            // Immediately restore bias level right after pulse transmission
+            DacService::writeDCBias();
+        }
+
         if (val == 0xFFFF) {
             stuck = true;
             // Pad the remaining samples with 0 to avoid garbage data
