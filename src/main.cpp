@@ -1,47 +1,72 @@
 #include <Arduino.h>
+#include <Constant.hpp>
 #include "service/ComManager.h"
+#include "app/TransmitterApp.h"
+#include "app/ReceiverApp.hpp"
 
-// Thông tin WiFi
+// Shared data block between Core 0 and Core 1
+SharedSonarData sharedData = {
+    .triggerTx = false,
+    .processingDone = false,
+    .adcBuffer = {0},
+    .spinlock = portMUX_INITIALIZER_UNLOCKED
+};
+
+// WiFi SSID, password and MDNS hostname
 const char* ssid = "Noel";
 const char* password = "hongthanh2110";
 const char* hostName = "esp32";
 
 ComManager com(ssid, password, hostName);
-
-// Hàm callback xử lý tin nhắn nhận được
-void onMessage(String msg) {
-    Serial.println("Received: " + msg);
-    
-    if (msg == "on") {
-        digitalWrite(2, HIGH);
-        com.sendMessage(">>> LED ON");
-    } else if (msg == "off") {
-        digitalWrite(2, LOW);
-        com.sendMessage(">>> LED OFF");
-    } else {
-        com.sendMessage("ESP32 received: " + msg);
-    }
-}
+TransmitterApp txApp(com, sharedData);
+ReceiverApp rxApp(sharedData);
 
 void setup() {
-    Serial.begin(115200);
-    pinMode(2, OUTPUT);
+    Serial.begin(Constant::SERIAL_BAUD_RATE);
+    delay(Constant::SETUP_DELAY_MS);
+    Serial.println("System starting up...");
 
-    com.setOnMessageReceived(onMessage);
-    com.begin();
+    // Initialize drivers & local applications (networking is offloaded to Core 0)
+    txApp.begin();
+    rxApp.begin();
+
+    Serial.println("Drivers and Services initialized.");
+
+    // Pin Task0 to Core 0: High-priority hardware Pulse Generation and Wi-Fi UDP networking
+    xTaskCreatePinnedToCore(
+        [](void* param) {
+            Serial.println("Transmitter Task (Core 0) started.");
+            com.begin(); // Initialize UDP socket and WiFi on Core 0 for thread safety
+            while (true) {
+                txApp.run();
+            }
+        },
+        "TxTask",
+        Constant::TASK_STACK_SIZE,
+        nullptr,
+        Constant::TASK_PRIORITY,
+        nullptr,
+        0   // Pinned to Core 0
+    );
+
+    // Pin Task1 to Core 1: Critical real-time DSP pipelines and high-speed ADC sampling
+    xTaskCreatePinnedToCore(
+        [](void* param) {
+            Serial.println("Receiver Task (Core 1) started.");
+            while (true) {
+                rxApp.run();
+            }
+        },
+        "RxTask",
+        Constant::TASK_STACK_SIZE,
+        nullptr,
+        Constant::TASK_PRIORITY,
+        nullptr,
+        1   // Pinned to Core 1
+    );
 }
 
 void loop() {
-    com.update();
-
-    // Gửi bản tin cứng định kỳ
-    static unsigned long lastSend = 0;
-    if (com.isConnected() && millis() - lastSend > 2000) {
-        com.sendMessage("Heartbeat - Millis: " + String(millis()));
-        lastSend = millis();
-    }
-    delay(2000); // Giảm tải CPU
+    // Main loop does nothing as the work is executed asynchronously by Core 0/1 tasks.
+    vTaskDelay(pdMS_TO_TICKS(Constant::LOOP_DELAY_MS));
 }
-
-
-

@@ -2,21 +2,19 @@
 #define COM_MANAGER_H
 
 #include <Arduino.h>
+#include <Constant.hpp>
 #include <WiFi.h>
+#include <WiFiUdp.h>
 #include <ESPmDNS.h>
-
-typedef void (*OnMessageReceivedCallback)(String message);
 
 class ComManager {
 public:
-    ComManager(const char* ssid, const char* password, const char* hostName, uint16_t port = 8080);
+    ComManager(const char* ssid, const char* password, const char* hostName, uint16_t port = Constant::DEFAULT_PORT);
     
     void begin();
     void update();
-    void sendMessage(String message);
-    bool isConnected();
-    
-    void setOnMessageReceived(OnMessageReceivedCallback callback);
+    bool isStreaming();
+    void sendFrame(uint16_t frameId, const uint16_t* samples, size_t size);
 
 private:
     const char* _ssid;
@@ -24,12 +22,10 @@ private:
     const char* _hostName;
     uint16_t _port;
     
-    WiFiServer _server;
-    WiFiClient _client;
-    OnMessageReceivedCallback _onMessageReceived;
-
-    void handleWiFi();
-    void handleClient();
+    WiFiUDP _udp;
+    IPAddress _remoteIp;
+    uint16_t _remotePort;
+    bool _isStreaming;
 };
 
-#endif
+#endif // COM_MANAGER_H
