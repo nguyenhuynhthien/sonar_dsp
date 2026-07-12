@@ -17,6 +17,21 @@ void TransmitterApp::begin() {
 void TransmitterApp::run() {
     _com.update();
 
+    // Send angle if it changed and we're not streaming
+    bool angleUpdated = false;
+    uint16_t currentAngle = 0;
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    if (_sharedData.angleUpdated) {
+        angleUpdated = true;
+        currentAngle = _sharedData.servoAngle;
+        _sharedData.angleUpdated = false;
+    }
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+    if (angleUpdated && !_com.isStreaming()) {
+        _com.sendAngle(currentAngle);
+    }
+
     // Check if pulse type changed in _com
     ComManager::PulseType currentType = _com.getPulseType();
     if (currentType != _pulseType) {
@@ -58,12 +73,14 @@ void TransmitterApp::run() {
 
         // 3. Retrieve sampled buffer and stream via UDP
         if (_sharedData.processingDone) {
+            uint16_t angle;
             taskENTER_CRITICAL(&_sharedData.spinlock);
             memcpy(_localAdcBuffer, (const void*)_sharedData.adcBuffer, sizeof(_localAdcBuffer));
+            angle = _sharedData.servoAngle;
             _sharedData.processingDone = false;
             taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-            _com.sendFrame(_frameId++, _localAdcBuffer, Constant::ADC_SAMPLES);
+            _com.sendFrame(_frameId++, _localAdcBuffer, Constant::ADC_SAMPLES, angle);
         } else {
             Serial.println("Error: Timeout waiting for Core 1 to complete sampling!");
         }

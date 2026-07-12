@@ -19,8 +19,10 @@ public:
     void begin();
     void update();
     bool isStreaming();
-    void sendFrame(uint16_t frameId, const uint16_t* samples, size_t size);
+    void sendFrame(uint16_t frameId, const uint16_t* samples, size_t size, uint16_t angle);
+    void sendAngle(uint16_t angle);
     PulseType getPulseType() const { return _pulseType; }
+    bool isServoEnabled() const { return _isServoEnabled; }
 
 private:
     const char* _ssid;
@@ -33,6 +35,7 @@ private:
     uint16_t _remotePort;
     bool _isStreaming;
     PulseType _pulseType;
+    bool _isServoEnabled;
 };
 
 #endif // COM_MANAGER_H

@@ -45,7 +45,7 @@ namespace Constant {
     // Timing & Timeouts
     constexpr uint32_t RX_POLL_DELAY_US = 50;
     constexpr uint32_t TX_RESPONSE_TIMEOUT_MS = 100;
-    constexpr uint32_t TX_PERIOD_MS = 45;
+    constexpr uint32_t TX_PERIOD_MS = 15;
     constexpr uint32_t TX_IDLE_DELAY_MS = 20;
     constexpr uint32_t WIFI_CONNECT_TIMEOUT_LIMIT = 20; // 20 iterations of 500ms = 10 seconds
     constexpr uint32_t WIFI_CONNECT_DELAY_MS = 500;

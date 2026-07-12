@@ -1,7 +1,7 @@
 #include "ComManager.h"
 
 ComManager::ComManager(const char* ssid, const char* password, const char* hostName, uint16_t port)
-    : _ssid(ssid), _password(password), _hostName(hostName), _port(port), _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE) {
+    : _ssid(ssid), _password(password), _hostName(hostName), _port(port), _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE), _isServoEnabled(false) {
 }
 
 void ComManager::begin() {
@@ -13,7 +13,7 @@ void ComManager::begin() {
     
     Serial.print("Connecting to router ");
     Serial.println(_ssid);
-
+ 
     // Wait up to timeout limit for connection to router
     int timeout = 0;
     while (WiFi.status() != WL_CONNECTED && timeout < (int)Constant::WIFI_CONNECT_TIMEOUT_LIMIT) {
@@ -46,20 +46,16 @@ void ComManager::begin() {
 void ComManager::update() {
     int packetSize = _udp.parsePacket();
     if (packetSize > 0) {
-        // Serial.printf("Received UDP packet of size %d from %s:%d\n", 
-        //               packetSize, _udp.remoteIP().toString().c_str(), _udp.remotePort());
         char packetBuffer[Constant::UDP_BUFFER_SIZE];
         int len = _udp.read(packetBuffer, sizeof(packetBuffer) - 1);
         if (len > 0) {
+            _remoteIp = _udp.remoteIP();
+            _remotePort = _udp.remotePort();
             packetBuffer[len] = '\0';
             String command = String(packetBuffer);
             command.trim();
-            // Serial.printf("Command content: '%s'\n", command.c_str());
 
             if (command == "start") {
-                _remoteIp = _udp.remoteIP();
-                _remotePort = _udp.remotePort();
-                
                 // Send a tiny dummy packet immediately to trigger ARP resolution in lwIP
                 _udp.beginPacket(_remoteIp, _remotePort);
                 _udp.write((const uint8_t*)"ping", 4);
@@ -79,6 +75,12 @@ void ComManager::update() {
             } else if (command == "cfg:barker13") {
                 _pulseType = PULSE_BARKER13;
                 Serial.println("Pulse config changed: Barker13");
+            } else if (command == "servo:on") {
+                _isServoEnabled = true;
+                Serial.println("Servo control enabled.");
+            } else if (command == "servo:off") {
+                _isServoEnabled = false;
+                Serial.println("Servo control disabled.");
             }
         }
     }
@@ -88,7 +90,7 @@ bool ComManager::isStreaming() {
     return _isStreaming;
 }
 
-void ComManager::sendFrame(uint16_t frameId, const uint16_t* samples, size_t size) {
+void ComManager::sendFrame(uint16_t frameId, const uint16_t* samples, size_t size, uint16_t angle) {
     if (!_isStreaming || size != Constant::ADC_SAMPLES) {
         return;
     }
@@ -99,12 +101,14 @@ void ComManager::sendFrame(uint16_t frameId, const uint16_t* samples, size_t siz
     struct __attribute__((packed)) ChunkHeader {
         uint16_t frameId;
         uint8_t chunkIdx;
+        uint16_t angle;
     };
 
     for (size_t i = 0; i < CHUNKS_PER_FRAME; ++i) {
         ChunkHeader header;
         header.frameId = frameId;
         header.chunkIdx = (uint8_t)i;
+        header.angle = angle;
 
         _udp.beginPacket(_remoteIp, _remotePort);
         _udp.write((const uint8_t*)&header, sizeof(header));
@@ -114,4 +118,15 @@ void ComManager::sendFrame(uint16_t frameId, const uint16_t* samples, size_t siz
         // Pace transmission using configured delay to avoid WiFi buffer overflow
         delayMicroseconds(Constant::UDP_PACE_DELAY_US);
     }
+}
+
+void ComManager::sendAngle(uint16_t angle) {
+    if (_remotePort == 0) {
+        return;
+    }
+    char buf[16];
+    int len = snprintf(buf, sizeof(buf), "ang:%d", angle);
+    _udp.beginPacket(_remoteIp, _remotePort);
+    _udp.write((const uint8_t*)buf, len);
+    _udp.endPacket();
 }

@@ -7,6 +7,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include "ScannerApp.h"
+
 struct SharedSonarData {
     volatile bool triggerTx;
     volatile bool processingDone;
@@ -14,10 +16,14 @@ struct SharedSonarData {
     uint16_t adcBuffer[Constant::ADC_SAMPLES];
     portMUX_TYPE spinlock;
     TaskHandle_t rxTaskHandle;
+    TaskHandle_t servoTaskHandle;
     
     // Shared transmit pulse configuration
     uint8_t txBuffer[Constant::BARKER13_PULSE_LEN];
     volatile size_t txPulseLen;
+    
+    volatile uint16_t servoAngle;
+    volatile bool angleUpdated;
 };
 
 class TransmitterApp {
