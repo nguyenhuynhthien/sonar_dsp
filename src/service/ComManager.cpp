@@ -1,7 +1,7 @@
 #include "ComManager.h"
 
 ComManager::ComManager(const char* ssid, const char* password, const char* hostName, uint16_t port)
-    : _ssid(ssid), _password(password), _hostName(hostName), _port(port), _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE), _isServoEnabled(false) {
+    : _ssid(ssid), _password(password), _hostName(hostName), _port(port), _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE), _isServoEnabled(false), _streamMode(STREAM_RAW) {
 }
 
 void ComManager::begin() {
@@ -81,6 +81,15 @@ void ComManager::update() {
             } else if (command == "servo:off") {
                 _isServoEnabled = false;
                 Serial.println("Servo control disabled.");
+            } else if (command == "mode:raw") {
+                _streamMode = STREAM_RAW;
+                Serial.println("Streaming mode: Raw Signal");
+            } else if (command == "mode:demod") {
+                _streamMode = STREAM_DEMOD;
+                Serial.println("Streaming mode: Demodulated");
+            } else if (command == "mode:compressed") {
+                _streamMode = STREAM_COMPRESSED;
+                Serial.println("Streaming mode: Pulse Compressed");
             }
         }
     }
@@ -126,6 +135,17 @@ void ComManager::sendAngle(uint16_t angle) {
     }
     char buf[16];
     int len = snprintf(buf, sizeof(buf), "ang:%d", angle);
+    _udp.beginPacket(_remoteIp, _remotePort);
+    _udp.write((const uint8_t*)buf, len);
+    _udp.endPacket();
+}
+
+void ComManager::sendTarget(float range, uint16_t angle, float strength) {
+    if (_remotePort == 0) {
+        return;
+    }
+    char buf[48];
+    int len = snprintf(buf, sizeof(buf), "target:%.2f,%d,%.1f", range, angle, strength);
     _udp.beginPacket(_remoteIp, _remotePort);
     _udp.write((const uint8_t*)buf, len);
     _udp.endPacket();

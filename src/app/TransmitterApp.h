@@ -28,6 +28,12 @@ struct SharedSonarData {
     
     volatile uint16_t servoAngle;
     volatile bool angleUpdated;
+
+    // Target information and streaming configuration
+    volatile float targetRange;
+    volatile float targetStrength;
+    volatile bool targetDetected;
+    volatile uint8_t streamMode; // 0: raw, 1: demod, 2: compressed
 };
 
 class TransmitterApp {

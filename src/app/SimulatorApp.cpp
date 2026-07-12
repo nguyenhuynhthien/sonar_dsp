@@ -57,10 +57,8 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
             int deviation = (int)localPulse[pulseIdx] - (int)Constant::DAC_DC_BIAS;
 
             // Apply envelope distortion (fading) before and after the pulse center
-            float center = (float)actualPulseLen / 2.0f;
-            float distFromCenter = abs((float)pulseIdx - center);
-            float envelope = 1.0f - (distFromCenter / center); // 1.0 at center, 0.0 at edges
-            if (envelope < 0.0f) envelope = 0.0f;
+            // Keep uniform envelope to preserve matched filter coding performance
+            float envelope = 1.0f;
 
             // Scale deviation with the envelope and distance attenuation (0.5)
             float distortedDeviation = (float)deviation * envelope * 0.5f;

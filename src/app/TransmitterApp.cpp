@@ -57,6 +57,7 @@ void TransmitterApp::run() {
         _sharedData.triggerTx = true;
         _sharedData.processingDone = false;
         _sharedData.adcReady = false;
+        _sharedData.streamMode = (uint8_t)_com.getStreamMode();
         taskEXIT_CRITICAL(&_sharedData.spinlock);
 
         if (_sharedData.rxTaskHandle != nullptr) {
@@ -74,13 +75,24 @@ void TransmitterApp::run() {
         // 3. Retrieve sampled buffer and stream via UDP
         if (_sharedData.processingDone) {
             uint16_t angle;
+            bool targetDetected = false;
+            float targetRange = 0.0f;
+            float targetStrength = 0.0f;
             taskENTER_CRITICAL(&_sharedData.spinlock);
             memcpy(_localAdcBuffer, (const void*)_sharedData.adcBuffer, sizeof(_localAdcBuffer));
             angle = _sharedData.servoAngle;
+            targetDetected = _sharedData.targetDetected;
+            targetRange = _sharedData.targetRange;
+            targetStrength = _sharedData.targetStrength;
+            _sharedData.targetDetected = false; // Reset
             _sharedData.processingDone = false;
             taskEXIT_CRITICAL(&_sharedData.spinlock);
 
             _com.sendFrame(_frameId++, _localAdcBuffer, Constant::ADC_SAMPLES, angle);
+
+            if (targetDetected) {
+                _com.sendTarget(targetRange, angle, targetStrength);
+            }
         } else {
             Serial.println("Error: Timeout waiting for Core 1 to complete sampling!");
         }

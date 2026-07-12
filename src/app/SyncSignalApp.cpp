@@ -41,9 +41,4 @@ void SyncSignalApp::run() {
 
     // 5. Trigger hardware synchronization loop
     SyncSignalService::sampleAndPlay((uint16_t*)_sharedData.adcBuffer, Constant::ADC_SAMPLES, dac1Buffer, dac2Buffer, _dac1, _dac2);
-
-    // 6. Signal that hardware acquisition is complete
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    _sharedData.processingDone = true;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
 }

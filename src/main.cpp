@@ -20,7 +20,11 @@ SharedSonarData sharedData = {.triggerTx = false,
                               .simDelaySamples = 400, // Default to 400 samples delay (~2.5ms delay, simulating ~1.8 meters range)
                               .simEnabled = true,     // Simulator enabled by default
                               .servoAngle = 0,
-                              .angleUpdated = false};
+                              .angleUpdated = false,
+                              .targetRange = 0.0f,
+                              .targetStrength = 0.0f,
+                              .targetDetected = false,
+                              .streamMode = 0};
 
 // WiFi SSID, password and MDNS hostname
 const char *ssid = "Noel";

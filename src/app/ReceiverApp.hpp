@@ -22,9 +22,10 @@ private:
     float* _filteredI = nullptr;
     float* _filteredQ = nullptr;
 
-    // Matched filter coefficients (32 samples)
-    float _hI[Constant::FILTER_COEFFS_LEN];
-    float _hQ[Constant::FILTER_COEFFS_LEN];
+    // Matched filter coefficients (up to 104 samples for Barker 13)
+    float _hI[Constant::BARKER13_PULSE_LEN];
+    float _hQ[Constant::BARKER13_PULSE_LEN];
+    int _filterLen = 32;
 
     // Slow-time history for Pulse-Doppler (16 pings)
     float* _slowTimeI[Constant::SLOW_TIME_LEN] = {nullptr};
