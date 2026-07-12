@@ -3,11 +3,18 @@
 
 #include <Arduino.h>
 
+#include <driver/dac.h>
+#include "../driver/DacSignal.h"
+
 class DacService {
 public:
-    static void init();
-    static void writeSample(uint8_t value);
-    static void writeDCBias();
+    DacService(dac_channel_t channel);
+    void init();
+    void writeSample(uint8_t value);
+    void writeDCBias();
+
+private:
+    DacSignal _dacSignal;
 };
 
 #endif // DAC_SERVICE_H

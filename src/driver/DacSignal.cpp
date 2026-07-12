@@ -2,18 +2,20 @@
 #include <driver/dac.h>
 #include <Constant.hpp>
 
+DacSignal::DacSignal(dac_channel_t channel) : _channel(channel) {
+}
+
 void DacSignal::init() {
-    // Enable DAC channel 1 (GPIO 25)
-    dac_output_enable(DAC_CHANNEL_1);
+    // Enable the specified DAC channel
+    dac_output_enable(_channel);
     // Write initial DC bias
     writeDCBias();
 }
 
 void DacSignal::writeSample(uint8_t value) {
-    // Direct register or ESP-IDF write
-    dac_output_voltage(DAC_CHANNEL_1, value);
+    dac_output_voltage(_channel, value);
 }
 
 void DacSignal::writeDCBias() {
-    dac_output_voltage(DAC_CHANNEL_1, Constant::DAC_DC_BIAS);
+    dac_output_voltage(_channel, Constant::DAC_DC_BIAS);
 }

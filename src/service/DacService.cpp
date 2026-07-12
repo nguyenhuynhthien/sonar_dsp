@@ -1,14 +1,17 @@
 #include "DacService.h"
 #include "../driver/DacSignal.h"
 
+DacService::DacService(dac_channel_t channel) : _dacSignal(channel) {
+}
+
 void DacService::init() {
-    DacSignal::init();
+    _dacSignal.init();
 }
 
 void DacService::writeSample(uint8_t value) {
-    DacSignal::writeSample(value);
+    _dacSignal.writeSample(value);
 }
 
 void DacService::writeDCBias() {
-    DacSignal::writeDCBias();
+    _dacSignal.writeDCBias();
 }

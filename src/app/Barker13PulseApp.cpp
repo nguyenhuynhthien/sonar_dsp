@@ -3,17 +3,7 @@
 #include <Constant.hpp>
 #include <string.h>
 
-void Barker13PulseApp::init() {
-    DacService::init();
-}
 
-void Barker13PulseApp::writeSample(uint8_t value) {
-    DacService::writeSample(value);
-}
-
-void Barker13PulseApp::writeDCBias() {
-    DacService::writeDCBias();
-}
 
 void Barker13PulseApp::generateBarker13(uint8_t* buffer, size_t size) {
     // Fill the buffer with DAC DC bias as default

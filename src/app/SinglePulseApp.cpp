@@ -3,13 +3,7 @@
 #include <Constant.hpp>
 #include <math.h>
 
-void SinglePulseApp::init() { DacService::init(); }
 
-void SinglePulseApp::writeSample(uint8_t value) {
-  DacService::writeSample(value);
-}
-
-void SinglePulseApp::writeDCBias() { DacService::writeDCBias(); }
 
 void SinglePulseApp::generateSinglePulse(uint8_t *buffer, size_t size) {
   // Fill the buffer with DAC DC bias as default

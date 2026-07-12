@@ -3,10 +3,13 @@
 
 #include <Arduino.h>
 
+#include <driver/dac.h>
+#include "DacService.h"
+
 class AdcService {
 public:
     static void init();
-    static void sampleBuffer(uint16_t* buffer, size_t size, const uint8_t* txBuffer, size_t txPulseLen, volatile bool& adcReady);
+    static void sampleBuffer(uint16_t* buffer, size_t size);
 };
 
 #endif // ADC_SERVICE_H

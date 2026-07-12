@@ -22,6 +22,10 @@ struct SharedSonarData {
     uint8_t txBuffer[Constant::BARKER13_PULSE_LEN];
     volatile size_t txPulseLen;
     
+    // Simulator config
+    volatile uint32_t simDelaySamples;
+    volatile bool simEnabled;
+    
     volatile uint16_t servoAngle;
     volatile bool angleUpdated;
 };

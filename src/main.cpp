@@ -1,6 +1,7 @@
 #include "app/ReceiverApp.hpp"
 #include "app/ScannerApp.h"
 #include "app/TransmitterApp.h"
+#include "app/SyncSignalApp.h"
 #include "service/ComManager.h"
 #include "service/ServoService.h"
 #include <Arduino.h>
@@ -16,6 +17,8 @@ SharedSonarData sharedData = {.triggerTx = false,
                               .servoTaskHandle = nullptr,
                               .txBuffer = {0},
                               .txPulseLen = 0,
+                              .simDelaySamples = 400, // Default to 400 samples delay (~2.5ms delay, simulating ~1.8 meters range)
+                              .simEnabled = true,     // Simulator enabled by default
                               .servoAngle = 0,
                               .angleUpdated = false};
 
@@ -24,11 +27,16 @@ const char *ssid = "Noel";
 const char *password = "hongthanh2110";
 const char *hostName = "esp32";
 
+DacService dac1(DAC_CHANNEL_1);
+DacService dac2(DAC_CHANNEL_2);
+
 ComManager com(ssid, password, hostName);
 ServoService servoService;
 ScannerApp scannerApp(servoService, sharedData);
 TransmitterApp txApp(com, sharedData);
+SimulatorApp simulatorApp(sharedData);
 ReceiverApp rxApp(sharedData);
+SyncSignalApp syncApp(sharedData, dac1, dac2, simulatorApp);
 
 void setup() {
   Serial.begin(Constant::SERIAL_BAUD_RATE);
@@ -39,6 +47,8 @@ void setup() {
   scannerApp.begin();
   txApp.begin();
   rxApp.begin();
+  simulatorApp.begin();
+  syncApp.begin();
 
   Serial.println("Drivers and Services initialized.");
 
@@ -79,8 +89,11 @@ void setup() {
   // sampling
   xTaskCreatePinnedToCore(
       [](void *param) {
-        Serial.println("Receiver Task (Core 1) started.");
+        Serial.println("Sync and DSP Task (Core 1) started.");
         while (true) {
+          // 1. SyncSignalApp waits for trigger, prepares buffers, runs ADC/DAC sync loop
+          syncApp.run();
+          // 2. Once syncApp completes sampling, ReceiverApp processes DSP pipeline
           rxApp.run();
         }
       },

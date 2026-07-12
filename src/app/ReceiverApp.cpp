@@ -1,6 +1,7 @@
 #include "ReceiverApp.hpp"
 #include "../service/AdcService.h"
 #include "../service/DacService.h"
+#include "../service/SyncSignalService.h"
 #include <math.h>
 
 ReceiverApp::ReceiverApp(SharedSonarData& sharedData)
@@ -8,8 +9,6 @@ ReceiverApp::ReceiverApp(SharedSonarData& sharedData)
 }
 
 void ReceiverApp::begin() {
-    AdcService::init();
-    DacService::init();
     initDSPCoefficients();
 }
 
@@ -140,25 +139,14 @@ void ReceiverApp::performPulseDopplerFFT() {
 }
 
 void ReceiverApp::run() {
-    // Wait indefinitely for a task notification (trigger signal) from Core 0
-    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-    // Reset trigger Tx flag for consistency
+    // Capture the raw samples under lock
+    static uint16_t localRawSamples[Constant::ADC_SAMPLES];
     taskENTER_CRITICAL(&_sharedData.spinlock);
-    _sharedData.triggerTx = false;
+    memcpy(localRawSamples, (const void*)_sharedData.adcBuffer, sizeof(localRawSamples));
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-    // High-Speed ADC1 sampling: samples at sample rate
-    // Buffers directly into our shared sonar data structure
-    AdcService::sampleBuffer((uint16_t*)_sharedData.adcBuffer, Constant::ADC_SAMPLES, _sharedData.txBuffer, _sharedData.txPulseLen, _sharedData.adcReady);
-
-    // Temporary bypass of DSP pipelines for raw loopback debugging
-    // performIQDemodulation((const uint16_t*)_sharedData.adcBuffer);
-    // performMatchedFiltering();
-    // performPulseDopplerFFT();
-
-    // Signal to Core 0 that sampling is finished
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    _sharedData.processingDone = true;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
+    // Run DSP algorithms
+    performIQDemodulation(localRawSamples);
+    performMatchedFiltering();
+    performPulseDopplerFFT();
 }
