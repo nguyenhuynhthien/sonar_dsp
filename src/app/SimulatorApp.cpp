@@ -36,6 +36,12 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
         return;
     }
 
+    // Get current servo angle
+    int currentAngle = 0;
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    currentAngle = _sharedData.servoAngle;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
+
     // 1. Generate the raw pulse waveform using SinglePulseApp or Barker13PulseApp dynamically
     // based on the pulse length configured in sharedData.
     // If pulse length matches Barker13 length, generate Barker13, otherwise Single Pulse.
@@ -48,23 +54,46 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
         actualPulseLen = Constant::FILTER_COEFFS_LEN;
     }
 
-    uint32_t simDelay = _sharedData.simDelaySamples;
+    // Define 3 distinct targets
+    struct Target {
+        float angle;       // Center angle in degrees
+        uint32_t delay;    // Delay in samples (cự li)
+        float magnitude;   // Amplitude/gain scale (độ lớn)
+        float beamwidth;   // Beam half-width in degrees
+    };
 
-    // 2. Fill the buffer with ambient noise and insert the simulated echo
+    Target targets[3] = {
+        { 45.0f,  200, 0.8f, 6.0f },
+        { 90.0f,  450, 0.5f, 6.0f },
+        { 135.0f, 700, 0.3f, 6.0f }
+    };
+
+    // Find if the current angle is within any target's beamwidth
+    const Target* activeTarget = nullptr;
+    float activeBeamScale = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        float diff = abs((float)currentAngle - targets[i].angle);
+        if (diff < targets[i].beamwidth) {
+            activeTarget = &targets[i];
+            // Triangular beam pattern response: peak at center, 0 at beamwidth edge
+            activeBeamScale = (1.0f - (diff / targets[i].beamwidth)) * targets[i].magnitude;
+            break; // Assuming non-overlapping targets
+        }
+    }
+
+    // 2. Fill the buffer with ambient noise and insert the simulated echo if target is active
+    uint32_t simDelay = activeTarget ? activeTarget->delay : 0;
+
     for (size_t i = 0; i < size; ++i) {
-        if (i >= simDelay && i < simDelay + actualPulseLen) {
+        // Generate a shared random noise component for consistency
+        int noise = ((int)(esp_random() % 31)) - 15; // [-15, 15]
+
+        if (activeTarget && i >= simDelay && i < simDelay + actualPulseLen) {
             size_t pulseIdx = i - simDelay;
             int deviation = (int)localPulse[pulseIdx] - (int)Constant::DAC_DC_BIAS;
 
-            // Apply envelope distortion (fading) before and after the pulse center
-            // Keep uniform envelope to preserve matched filter coding performance
-            float envelope = 1.0f;
-
-            // Scale deviation with the envelope and distance attenuation (0.5)
-            float distortedDeviation = (float)deviation * envelope * 0.5f;
-
-            // Add pseudo-random high frequency noise
-            int noise = ((int)(esp_random() % 11)) - 5; // [-5, 5]
+            // Scale deviation with the beam scale
+            float distortedDeviation = (float)deviation * activeBeamScale;
 
             int simVal = (int)Constant::DAC_DC_BIAS + (int)distortedDeviation + noise;
 
@@ -74,8 +103,7 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
             buffer[i] = (uint8_t)simVal;
         } else {
             // Background ambient noise when no target is present
-            int ambientNoise = ((int)(esp_random() % 5)) - 2; // [-2, 2]
-            int simVal = (int)Constant::DAC_DC_BIAS + ambientNoise;
+            int simVal = (int)Constant::DAC_DC_BIAS + noise;
             
             if (simVal > 255) simVal = 255;
             if (simVal < 0) simVal = 0;
@@ -84,3 +112,4 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
         }
     }
 }
+

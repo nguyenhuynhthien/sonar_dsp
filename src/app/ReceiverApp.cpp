@@ -234,8 +234,8 @@ void ReceiverApp::run() {
     }
   }
 
-  // Threshold of 60.0f (in ADC units) to confirm a valid target echo
-  if (peakIdx != -1 && maxMag > 60.0f) {
+  // Threshold of 250.0f (in ADC units) to confirm a valid target echo (increased to prevent noise triggers)
+  if (peakIdx != -1 && maxMag > 250.0f) {
     // Subtract the pulse length (_filterLen) to get the true Time-Of-Flight to
     // the front of the pulse
     int tofIdx = peakIdx - _filterLen;
