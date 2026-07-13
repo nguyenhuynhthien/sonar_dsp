@@ -34,6 +34,8 @@ struct SharedSonarData {
     volatile float targetStrength;
     volatile bool targetDetected;
     volatile uint8_t streamMode; // 0: raw, 1: demod, 2: compressed
+    volatile bool accumulatedDataReady;
+    volatile bool requestServoStep;
 };
 
 class TransmitterApp {

@@ -24,7 +24,9 @@ SharedSonarData sharedData = {.triggerTx = false,
                               .targetRange = 0.0f,
                               .targetStrength = 0.0f,
                               .targetDetected = false,
-                              .streamMode = 0};
+                              .streamMode = 0,
+                              .accumulatedDataReady = false,
+                              .requestServoStep = false};
 
 // WiFi SSID, password and MDNS hostname
 const char *ssid = "Noel";
@@ -77,10 +79,32 @@ void setup() {
       [](void *param) {
         Serial.println("Scanner Task (Core 0) started.");
         while (true) {
-          if (com.isServoEnabled()) {
-            scannerApp.step();
+          bool stepRequested = false;
+          bool streaming = com.isStreaming();
+
+          if (streaming) {
+            taskENTER_CRITICAL(&sharedData.spinlock);
+            if (sharedData.requestServoStep) {
+              stepRequested = true;
+              sharedData.requestServoStep = false;
+            }
+            taskEXIT_CRITICAL(&sharedData.spinlock);
           }
-          vTaskDelay(pdMS_TO_TICKS(50)); // Step every 50ms independently
+
+          if (com.isServoEnabled()) {
+            if (streaming) {
+              if (stepRequested) {
+                scannerApp.step();
+              }
+              vTaskDelay(pdMS_TO_TICKS(5)); // Poll frequently (every 5ms) for low latency
+            } else {
+              // When not streaming, step independently on a timer (e.g. every 40ms)
+              scannerApp.step();
+              vTaskDelay(pdMS_TO_TICKS(40));
+            }
+          } else {
+            vTaskDelay(pdMS_TO_TICKS(20)); // Idle poll delay when servo is disabled
+          }
         }
       },
       "ScannerTask", 4096, nullptr,

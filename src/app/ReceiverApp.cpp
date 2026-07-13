@@ -15,8 +15,18 @@ void ReceiverApp::begin() {
   _filteredI = new (std::nothrow) float[Constant::ADC_SAMPLES];
   _filteredQ = new (std::nothrow) float[Constant::ADC_SAMPLES];
 
-  if (!_demodI || !_demodQ || !_filteredI || !_filteredQ) {
-    Serial.println("Error: Failed to allocate DSP buffers!");
+  for (int i = 0; i < 8; ++i) {
+    _pulseHistory[i] = new (std::nothrow) float[Constant::ADC_SAMPLES];
+  }
+  _accumulatedRaw = new (std::nothrow) float[Constant::ADC_SAMPLES];
+
+  bool allocSuccess = _demodI && _demodQ && _filteredI && _filteredQ && _accumulatedRaw;
+  for (int i = 0; i < 8; ++i) {
+    if (!_pulseHistory[i]) allocSuccess = false;
+  }
+
+  if (!allocSuccess) {
+    Serial.println("Error: Failed to allocate DSP/accumulation buffers on heap!");
   }
 
   // Initialize ESP-DSP Radix-2 FFT factors
@@ -73,20 +83,12 @@ void ReceiverApp::initDSPCoefficients() {
   }
 }
 
-void ReceiverApp::performIQDemodulation(const uint16_t *rawSamples) {
+void ReceiverApp::performIQDemodulation(const float *rawSamples) {
   if (!_demodI || !_demodQ)
     return;
 
-  // Digital DC Filter: compute the exact mean of the 2048 samples
-  float sum = 0.0f;
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    sum += rawSamples[n];
-  }
-  float mean = sum / (float)Constant::ADC_SAMPLES;
-
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    // Subtract the exact mean to center the signal at 0 V
-    float x = (float)rawSamples[n] - mean;
+    float x = rawSamples[n];
 
     // Optimized LO cos/sin are [1, 0, -1, 0] and [0, 1, 0, -1] respectively.
     // Q = x * (-refSin) -> refSin is [0, 1, 0, -1] -> -refSin is [0, -1, 0, 1].
@@ -200,8 +202,40 @@ void ReceiverApp::run() {
          sizeof(localRawSamples));
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-  // Run DSP algorithms
-  performIQDemodulation(localRawSamples);
+  // 1. Digital DC Filter: compute the exact mean of the 2048 samples
+  float sum = 0.0f;
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+    sum += localRawSamples[n];
+  }
+  float mean = sum / (float)Constant::ADC_SAMPLES;
+
+  // 2. Save DC-filtered pulse to _pulseHistory
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+    _pulseHistory[_accumulatedCount][n] = (float)localRawSamples[n] - mean;
+  }
+  _accumulatedCount++;
+
+  if (_accumulatedCount < 8) {
+    // Not enough pulses accumulated yet, signal Core 0 to continue firing
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    _sharedData.processingDone = true;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
+    return;
+  }
+
+  // 3. We have integrated 8 pulses. Sum them up to form _accumulatedRaw.
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+    _accumulatedRaw[n] = _pulseHistory[0][n];
+  }
+  for (int p = 1; p < 8; ++p) {
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      _accumulatedRaw[n] += _pulseHistory[p][n];
+    }
+  }
+
+  // 3. We have integrated 8 pulses. Do not divide by 8 (UI will handle the division).
+  // Run DSP algorithms on the accumulated raw sum
+  performIQDemodulation(_accumulatedRaw);
   performMatchedFiltering();
   performPulseDopplerFFT();
 
@@ -210,11 +244,7 @@ void ReceiverApp::run() {
   float maxMag = 0.0f;
   int peakIdx = -1;
 
-  // Normalization factor:
-  // Scale = sqrt(N) / (L * A_tx) where:
-  // N: code chips (13 for Barker, 1 for Single)
-  // L: filter length (104 for Barker, 32 for Single)
-  // A_tx: transmitter amplitude relative to bias (127.0f)
+  // Normalization factor (unmodified, but maxMag will be 8x larger because we didn't divide by 8)
   float scaleFactor = (_filterLen == (int)Constant::BARKER13_PULSE_LEN)
                           ? (sqrtf(13.0f) / (52.0f * 127.0f))
                           : (1.0f / (16.0f * 127.0f));
@@ -222,8 +252,6 @@ void ReceiverApp::run() {
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
     float rawMag =
         sqrtf(_filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n]);
-    // Normalize magnitude to match the input ADC units (0-2048) and show
-    // processing gain
     float mag = rawMag * scaleFactor;
     magnitude[n] = mag;
 
@@ -234,10 +262,9 @@ void ReceiverApp::run() {
     }
   }
 
-  // Threshold of 250.0f (in ADC units) to confirm a valid target echo (increased to prevent noise triggers)
-  if (peakIdx != -1 && maxMag > 250.0f) {
-    // Subtract the pulse length (_filterLen) to get the true Time-Of-Flight to
-    // the front of the pulse
+  // Local threshold is scaled by 8.0f since maxMag is 8x larger (adjusted to 200.0f for better sensitivity)
+  float localThreshold = 200.0f * 8.0f;
+  if (peakIdx != -1 && maxMag > localThreshold) {
     int tofIdx = peakIdx - _filterLen;
     if (tofIdx < 0)
       tofIdx = 0;
@@ -259,19 +286,28 @@ void ReceiverApp::run() {
   // Overwrite adcBuffer based on the selected streaming mode
   taskENTER_CRITICAL(&_sharedData.spinlock);
   uint8_t mode = _sharedData.streamMode;
-  if (mode == 1) { // STREAM_DEMOD: Demodulated envelope (magnitude of I/Q before matched filter)
+  if (mode == 0) { // STREAM_RAW
+    // Since we accumulated 8 pulses, shift the DC-offset by Constant::ADC_DC_OFFSET * 8.0f (16384.0f)
+    // to prevent going negative, then constrain to uint16_t range [0.0f, 65535.0f].
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      float biasedRaw = _accumulatedRaw[n] + (Constant::ADC_DC_OFFSET * 8.0f);
+      _sharedData.adcBuffer[n] = (uint16_t)constrain(biasedRaw, 0.0f, 65535.0f);
+    }
+  } else if (mode == 1) { // STREAM_DEMOD
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
       float demodMag = sqrtf(_demodI[n] * _demodI[n] + _demodQ[n] * _demodQ[n]);
-      // Baseband magnitude naturally starts from 0 V
       _sharedData.adcBuffer[n] = (uint16_t)constrain(demodMag, 0.0f, 65535.0f);
     }
-  } else if (mode == 2) { // STREAM_COMPRESSED: Pulse Compressed magnitude
+  } else if (mode == 2) { // STREAM_COMPRESSED
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      // Matched filter magnitude naturally starts from 0 V
       _sharedData.adcBuffer[n] = (uint16_t)constrain(magnitude[n], 0.0f, 65535.0f);
     }
   }
-  // Signal to Core 0 that processing is complete
+
+  _sharedData.accumulatedDataReady = true;
   _sharedData.processingDone = true;
   taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+  // Reset accumulation for the next cycle
+  _accumulatedCount = 0;
 }

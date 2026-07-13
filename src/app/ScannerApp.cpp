@@ -2,7 +2,7 @@
 #include "TransmitterApp.h"
 
 ScannerApp::ScannerApp(ServoService &servoService, SharedSonarData &sharedData)
-    : _servoService(servoService), _sharedData(sharedData), _currentAngle(0), _step(3) {}
+    : _servoService(servoService), _sharedData(sharedData), _currentAngle(0), _step(5) {}
 
 void ScannerApp::begin() {
   _servoService.init(14); // GPIO14
@@ -13,10 +13,10 @@ void ScannerApp::step() {
   _currentAngle += _step;
   if (_currentAngle >= 180) {
     _currentAngle = 180;
-    _step = -3; // Reverse direction
+    _step = -5; // Reverse direction
   } else if (_currentAngle <= 0) {
     _currentAngle = 0;
-    _step = 3; // Reverse direction
+    _step = 5; // Reverse direction
   }
   _servoService.writeAngle(_currentAngle);
 

@@ -63,9 +63,9 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     };
 
     Target targets[3] = {
-        { 45.0f,  200, 0.8f, 6.0f },
-        { 90.0f,  450, 0.5f, 6.0f },
-        { 135.0f, 700, 0.3f, 6.0f }
+        { 45.0f,  400, 0.8f, 6.0f },
+        { 90.0f,  850, 0.5f, 6.0f },
+        { 135.0f, 1300, 0.4f, 6.0f }
     };
 
     // Find if the current angle is within any target's beamwidth

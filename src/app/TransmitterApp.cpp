@@ -78,20 +78,29 @@ void TransmitterApp::run() {
             bool targetDetected = false;
             float targetRange = 0.0f;
             float targetStrength = 0.0f;
+            bool dataReady = false;
+
             taskENTER_CRITICAL(&_sharedData.spinlock);
-            memcpy(_localAdcBuffer, (const void*)_sharedData.adcBuffer, sizeof(_localAdcBuffer));
-            angle = _sharedData.servoAngle;
-            targetDetected = _sharedData.targetDetected;
-            targetRange = _sharedData.targetRange;
-            targetStrength = _sharedData.targetStrength;
-            _sharedData.targetDetected = false; // Reset
+            dataReady = _sharedData.accumulatedDataReady;
+            if (dataReady) {
+                memcpy(_localAdcBuffer, (const void*)_sharedData.adcBuffer, sizeof(_localAdcBuffer));
+                angle = _sharedData.servoAngle;
+                targetDetected = _sharedData.targetDetected;
+                targetRange = _sharedData.targetRange;
+                targetStrength = _sharedData.targetStrength;
+                _sharedData.targetDetected = false; // Reset
+                _sharedData.accumulatedDataReady = false; // Reset
+                _sharedData.requestServoStep = true; // Request servo step after 8 accumulated pulses
+            }
             _sharedData.processingDone = false;
             taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-            _com.sendFrame(_frameId++, _localAdcBuffer, Constant::ADC_SAMPLES, angle);
+            if (dataReady) {
+                _com.sendFrame(_frameId++, _localAdcBuffer, Constant::ADC_SAMPLES, angle);
 
-            if (targetDetected) {
-                _com.sendTarget(targetRange, angle, targetStrength);
+                if (targetDetected) {
+                    _com.sendTarget(targetRange, angle, targetStrength);
+                }
             }
         } else {
             Serial.println("Error: Timeout waiting for Core 1 to complete sampling!");

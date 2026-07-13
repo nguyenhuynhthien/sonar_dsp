@@ -32,9 +32,14 @@ private:
     float* _slowTimeQ[Constant::SLOW_TIME_LEN] = {nullptr};
     int _pingCounter;
 
+    // Pulse accumulation variables
+    float* _pulseHistory[8] = {nullptr};
+    float* _accumulatedRaw = nullptr;
+    int _accumulatedCount = 0;
+
     // Internal DSP routines
     void initDSPCoefficients();
-    void performIQDemodulation(const uint16_t* rawSamples);
+    void performIQDemodulation(const float* rawSamples);
     void performMatchedFiltering();
     void performPulseDopplerFFT();
     void fftRadix2(float* real, float* imag, int n);
