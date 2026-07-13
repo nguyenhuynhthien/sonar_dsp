@@ -9,34 +9,7 @@
 
 #include "ScannerApp.h"
 
-struct SharedSonarData {
-    volatile bool triggerTx;
-    volatile bool processingDone;
-    volatile bool adcReady;
-    uint16_t adcBuffer[Constant::ADC_SAMPLES];
-    portMUX_TYPE spinlock;
-    TaskHandle_t rxTaskHandle;
-    TaskHandle_t servoTaskHandle;
-    
-    // Shared transmit pulse configuration
-    uint8_t txBuffer[Constant::BARKER13_PULSE_LEN];
-    volatile size_t txPulseLen;
-    
-    // Simulator config
-    volatile uint32_t simDelaySamples;
-    volatile bool simEnabled;
-    
-    volatile uint16_t servoAngle;
-    volatile bool angleUpdated;
-
-    // Target information and streaming configuration
-    volatile float targetRange;
-    volatile float targetStrength;
-    volatile bool targetDetected;
-    volatile uint8_t streamMode; // 0: raw, 1: demod, 2: compressed
-    volatile bool accumulatedDataReady;
-    volatile bool requestServoStep;
-};
+#include <SharedSonarData.h>
 
 class TransmitterApp {
 public:

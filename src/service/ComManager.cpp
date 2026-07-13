@@ -135,17 +135,19 @@ void ComManager::sendAngle(uint16_t angle) {
     }
     char buf[16];
     int len = snprintf(buf, sizeof(buf), "ang:%d", angle);
+    
     _udp.beginPacket(_remoteIp, _remotePort);
     _udp.write((const uint8_t*)buf, len);
     _udp.endPacket();
 }
 
-void ComManager::sendTarget(float range, uint16_t angle, float strength) {
+void ComManager::sendTarget(float range, uint16_t angle, float strength, float velocity) {
     if (_remotePort == 0) {
         return;
     }
-    char buf[48];
-    int len = snprintf(buf, sizeof(buf), "target:%.2f,%d,%.1f", range, angle, strength);
+    char buf[64];
+    int len = snprintf(buf, sizeof(buf), "target:%.2f,%d,%.1f,%.2f", range, angle, strength, velocity);
+    
     _udp.beginPacket(_remoteIp, _remotePort);
     _udp.write((const uint8_t*)buf, len);
     _udp.endPacket();

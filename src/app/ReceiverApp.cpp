@@ -1,4 +1,5 @@
 #include "ReceiverApp.hpp"
+#include "../service/ComManager.h"
 #include "../service/AdcService.h"
 #include "../service/DacService.h"
 #include "../service/SyncSignalService.h"
@@ -9,21 +10,14 @@ ReceiverApp::ReceiverApp(SharedSonarData &sharedData)
     : _sharedData(sharedData), _pingCounter(0) {}
 
 void ReceiverApp::begin() {
-  // Allocate DSP buffers on the heap (approx 32KB total, which fits easily)
+  // Allocate essential DSP buffers only (40KB total)
   _demodI = new (std::nothrow) float[Constant::ADC_SAMPLES];
   _demodQ = new (std::nothrow) float[Constant::ADC_SAMPLES];
   _filteredI = new (std::nothrow) float[Constant::ADC_SAMPLES];
   _filteredQ = new (std::nothrow) float[Constant::ADC_SAMPLES];
-
-  for (int i = 0; i < 8; ++i) {
-    _pulseHistory[i] = new (std::nothrow) float[Constant::ADC_SAMPLES];
-  }
   _accumulatedRaw = new (std::nothrow) float[Constant::ADC_SAMPLES];
 
   bool allocSuccess = _demodI && _demodQ && _filteredI && _filteredQ && _accumulatedRaw;
-  for (int i = 0; i < 8; ++i) {
-    if (!_pulseHistory[i]) allocSuccess = false;
-  }
 
   if (!allocSuccess) {
     Serial.println("Error: Failed to allocate DSP/accumulation buffers on heap!");
@@ -75,11 +69,10 @@ void ReceiverApp::initDSPCoefficients() {
       break;
     }
 
-    float demodI = x * refCos;
-    float demodQ = x * (-refSin);
-
-    _hI[(pulseLen - 1) - i] = demodI;
-    _hQ[(pulseLen - 1) - i] = -demodQ; // Conjugate
+    // matched filter: h(t) = s*(T - t)
+    int filterIdx = pulseLen - 1 - i;
+    _hI[filterIdx] = x * refCos;
+    _hQ[filterIdx] = -x * refSin; // conjugate
   }
 }
 
@@ -89,9 +82,6 @@ void ReceiverApp::performIQDemodulation(const float *rawSamples) {
 
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
     float x = rawSamples[n];
-
-    // Optimized LO cos/sin are [1, 0, -1, 0] and [0, 1, 0, -1] respectively.
-    // Q = x * (-refSin) -> refSin is [0, 1, 0, -1] -> -refSin is [0, -1, 0, 1].
     switch (n & 3) {
     case 0:
       _demodI[n] = x;
@@ -116,13 +106,12 @@ void ReceiverApp::performIQDemodulation(const float *rawSamples) {
 void ReceiverApp::performMatchedFiltering() {
   if (!_demodI || !_demodQ || !_filteredI || !_filteredQ)
     return;
+
+  // Real-time matched filtering: convolve I/Q demodulated signal with hI/hQ
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
     float sumI = 0.0f;
     float sumQ = 0.0f;
 
-    // Convolve the complex signal with complex filter coefficients
-    // Optimization: since LO has periodic 0s, hI/hQ also have periodic 0s.
-    // We only perform calculations for non-zero coefficients.
     for (int k = 0; k < _filterLen; ++k) {
       if (n >= k) {
         float sigI = _demodI[n - k];
@@ -130,6 +119,7 @@ void ReceiverApp::performMatchedFiltering() {
         float coefI = _hI[k];
         float coefQ = _hQ[k];
 
+        // Complex multiplication: (sigI + j*sigQ) * (coefI + j*coefQ)
         if (coefI != 0.0f) {
           sumI += sigI * coefI;
           sumQ += sigQ * coefI;
@@ -140,54 +130,9 @@ void ReceiverApp::performMatchedFiltering() {
         }
       }
     }
+
     _filteredI[n] = sumI;
     _filteredQ[n] = sumQ;
-  }
-}
-
-void ReceiverApp::fftRadix2(float *real, float *imag, int n) {
-  // Pack real/imag arrays into interleaved complex array
-  float fft_input[2 * Constant::SLOW_TIME_LEN];
-  for (int i = 0; i < n; ++i) {
-    fft_input[2 * i] = real[i];
-    fft_input[2 * i + 1] = imag[i];
-  }
-
-  // Perform Bit Reversal and Radix-2 FFT using hardware-accelerated ESP-DSP library
-  dsps_bit_rev_fc32(fft_input, n);
-  dsps_fft2r_fc32(fft_input, n);
-
-  // Unpack back to real and imag arrays
-  for (int i = 0; i < n; ++i) {
-    real[i] = fft_input[2 * i];
-    imag[i] = fft_input[2 * i + 1];
-  }
-}
-
-void ReceiverApp::performPulseDopplerFFT() {
-  if (!_filteredI || !_filteredQ || !_slowTimeI[0] || !_slowTimeQ[0])
-    return;
-  // 1. Store matched filter output into history buffer at current index
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    _slowTimeI[_pingCounter][n] = _filteredI[n];
-    _slowTimeQ[_pingCounter][n] = _filteredQ[n];
-  }
-
-  _pingCounter = (_pingCounter + 1) % (int)Constant::SLOW_TIME_LEN;
-
-  // 2. Perform Doppler FFT for each range bin
-  float real[Constant::SLOW_TIME_LEN];
-  float imag[Constant::SLOW_TIME_LEN];
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    for (int i = 0; i < (int)Constant::SLOW_TIME_LEN; ++i) {
-      // Re-order buffer starting from current write head so it is sequential in
-      // time
-      int histIdx = (_pingCounter + i) % (int)Constant::SLOW_TIME_LEN;
-      real[i] = _slowTimeI[histIdx][n];
-      imag[i] = _slowTimeQ[histIdx][n];
-    }
-
-    fftRadix2(real, imag, (int)Constant::SLOW_TIME_LEN);
   }
 }
 
@@ -209,63 +154,139 @@ void ReceiverApp::run() {
   }
   float mean = sum / (float)Constant::ADC_SAMPLES;
 
-  // 2. Save DC-filtered pulse to _pulseHistory
+  // 2. DC-filter the pulse to a local temp array
+  static float tempRaw[Constant::ADC_SAMPLES];
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    _pulseHistory[_accumulatedCount][n] = (float)localRawSamples[n] - mean;
+    tempRaw[n] = (float)localRawSamples[n] - mean;
   }
+
+  // 3. Process IQ Demodulation and Matched Filtering for the current pulse
+  performIQDemodulation(tempRaw);
+  performMatchedFiltering();
+
+  float dspGain = (_filterLen == (int)Constant::BARKER13_PULSE_LEN) ? (52.0f * 127.0f) : (16.0f * 127.0f);
+
+  // Step 1: Scan vertically on Column 0 (the very first pulse, accumulatedCount == 0)
+  // to find the range peak index r_peak (_peakIdxStored)
+  if (_accumulatedCount == 0) {
+    float maxRawMag_single = 0.0f;
+    _peakIdxStored = -1;
+
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      float rawMag0 = sqrtf(_filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n]);
+      float normMag0 = rawMag0 / dspGain;
+
+      // Skip the first 120 samples to avoid TX pulse leakage
+      if (n >= 120 && normMag0 > maxRawMag_single) {
+        maxRawMag_single = normMag0;
+        _peakIdxStored = n;
+      }
+    }
+
+    // Dynamic threshold based on pulse type: Single Pulse needs higher threshold (300.0f) due to higher noise floor
+    float localThreshold = (_filterLen == (int)Constant::BARKER13_PULSE_LEN) ? 120.0f : 300.0f;
+    if (_peakIdxStored != -1 && maxRawMag_single < localThreshold) {
+      _peakIdxStored = -1;
+    }
+
+    // Initialize accumulated raw values array for peak detection
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      _accumulatedRaw[n] = _filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n];
+    }
+  } else {
+    // Accumulate incoherent energy for peak validation/detection
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      _accumulatedRaw[n] += _filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n];
+    }
+  }
+
+  // Extract the complex value of this ping at _peakIdxStored for the horizontal FFT
+  if (_peakIdxStored != -1) {
+    // Apply a 4-sample moving average (LPF) around the peak to reconstruct a full (I, Q) pair.
+    // This ensures both components are non-zero regardless of whether peakIdx is even or odd.
+    float sumI = 0.0f;
+    float sumQ = 0.0f;
+    int count = 0;
+    for (int d = -1; d <= 2; ++d) {
+      int idx = _peakIdxStored + d;
+      if (idx >= 0 && idx < (int)Constant::ADC_SAMPLES) {
+        sumI += _filteredI[idx];
+        sumQ += _filteredQ[idx];
+        count++;
+      }
+    }
+    _fftReal[_accumulatedCount] = sumI / (float)count;
+    _fftImag[_accumulatedCount] = sumQ / (float)count;
+  } else {
+    _fftReal[_accumulatedCount] = 0.0f;
+    _fftImag[_accumulatedCount] = 0.0f;
+  }
+
   _accumulatedCount++;
 
   if (_accumulatedCount < 8) {
     // Not enough pulses accumulated yet, signal Core 0 to continue firing
     taskENTER_CRITICAL(&_sharedData.spinlock);
+    _sharedData.pulseIndex = _accumulatedCount;
     _sharedData.processingDone = true;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
     return;
   }
 
-  // 3. We have integrated 8 pulses. Sum them up to form _accumulatedRaw.
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    _accumulatedRaw[n] = _pulseHistory[0][n];
-  }
-  for (int p = 1; p < 8; ++p) {
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      _accumulatedRaw[n] += _pulseHistory[p][n];
+  // We have integrated 8 pulses.
+  // Step 2: Quét ngang chạy FFT tại hàng _peakIdxStored
+  float velocity = 0.0f;
+  float cleanRawMag = 0.0f;
+  bool targetDetected = (_peakIdxStored != -1);
+
+  if (targetDetected) {
+    // Run 8-point DFT/FFT on the stored ping history at _peakIdxStored
+    float realOut[8] = {0.0f};
+    float imagOut[8] = {0.0f};
+    for (int k = 0; k < 8; ++k) {
+      float sumReal = 0.0f;
+      float sumImag = 0.0f;
+      for (int n = 0; n < 8; ++n) {
+        float angle = -2.0f * M_PI * k * n / 8.0f;
+        float cosVal = cosf(angle);
+        float sinVal = sinf(angle);
+        sumReal += _fftReal[n] * cosVal - _fftImag[n] * sinVal;
+        sumImag += _fftReal[n] * sinVal + _fftImag[n] * cosVal;
+      }
+      realOut[k] = sumReal;
+      imagOut[k] = sumImag;
     }
-  }
 
-  // 3. We have integrated 8 pulses. Do not divide by 8 (UI will handle the division).
-  // Run DSP algorithms on the accumulated raw sum
-  performIQDemodulation(_accumulatedRaw);
-  performMatchedFiltering();
-  performPulseDopplerFFT();
-
-  // Calculate magnitude, peak detection for target range and strength
-  static float magnitude[Constant::ADC_SAMPLES];
-  float maxMag = 0.0f;
-  int peakIdx = -1;
-
-  // Normalization factor (unmodified, but maxMag will be 8x larger because we didn't divide by 8)
-  float scaleFactor = (_filterLen == (int)Constant::BARKER13_PULSE_LEN)
-                          ? (sqrtf(13.0f) / (52.0f * 127.0f))
-                          : (1.0f / (16.0f * 127.0f));
-
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    float rawMag =
-        sqrtf(_filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n]);
-    float mag = rawMag * scaleFactor;
-    magnitude[n] = mag;
-
-    // Skip the first 120 samples to avoid TX pulse leakage
-    if (n >= 120 && mag > maxMag) {
-      maxMag = mag;
-      peakIdx = n;
+    // Find peak frequency bin
+    float maxFftMag = -1.0f;
+    int doppler_bin = 0;
+    for (int k = 0; k < 8; ++k) {
+      float fftMag = realOut[k] * realOut[k] + imagOut[k] * imagOut[k];
+      if (fftMag > maxFftMag) {
+        maxFftMag = fftMag;
+        doppler_bin = k;
+      }
     }
+
+    // Map doppler_bin to fd
+    float fd = 0.0f;
+    float deltaF = 1.0f / (8.0f * ((float)Constant::TX_PERIOD_MS / 1000.0f)); // 8.3333 Hz
+    if (doppler_bin < 4) {
+      fd = doppler_bin * deltaF;
+    } else {
+      fd = (doppler_bin - 8) * deltaF;
+    }
+
+    // Convert to velocity: v = fd * c / (2 * fc)
+    velocity = fd * (Constant::SPEED_OF_SOUND / (2.0f * (float)Constant::CENTER_FREQ));
+
+    // Clean unscaled coherent integrated amplitude (8x gain)
+    cleanRawMag = sqrtf(maxFftMag);
   }
 
-  // Local threshold is scaled by 8.0f since maxMag is 8x larger (adjusted to 200.0f for better sensitivity)
-  float localThreshold = 200.0f * 8.0f;
-  if (peakIdx != -1 && maxMag > localThreshold) {
-    int tofIdx = peakIdx - _filterLen;
+  // Update target details
+  if (targetDetected && _peakIdxStored != -1) {
+    int tofIdx = _peakIdxStored - _filterLen;
     if (tofIdx < 0)
       tofIdx = 0;
 
@@ -275,39 +296,88 @@ void ReceiverApp::run() {
     taskENTER_CRITICAL(&_sharedData.spinlock);
     _sharedData.targetDetected = true;
     _sharedData.targetRange = range;
-    _sharedData.targetStrength = maxMag;
+    _sharedData.targetStrength = cleanRawMag; // Coherent sum unscaled magnitude (8x gain)
+    _sharedData.peakIndexForVelocity = _peakIdxStored;
+    _sharedData.velocityRequested = true;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
   } else {
     taskENTER_CRITICAL(&_sharedData.spinlock);
     _sharedData.targetDetected = false;
+    _sharedData.velocityRequested = false;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
   }
 
-  // Overwrite adcBuffer based on the selected streaming mode
-  taskENTER_CRITICAL(&_sharedData.spinlock);
-  uint8_t mode = _sharedData.streamMode;
-  if (mode == 0) { // STREAM_RAW
-    // Since we accumulated 8 pulses, shift the DC-offset by Constant::ADC_DC_OFFSET * 8.0f (16384.0f)
-    // to prevent going negative, then constrain to uint16_t range [0.0f, 65535.0f].
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      float biasedRaw = _accumulatedRaw[n] + (Constant::ADC_DC_OFFSET * 8.0f);
-      _sharedData.adcBuffer[n] = (uint16_t)constrain(biasedRaw, 0.0f, 65535.0f);
-    }
-  } else if (mode == 1) { // STREAM_DEMOD
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      float demodMag = sqrtf(_demodI[n] * _demodI[n] + _demodQ[n] * _demodQ[n]);
-      _sharedData.adcBuffer[n] = (uint16_t)constrain(demodMag, 0.0f, 65535.0f);
-    }
-  } else if (mode == 2) { // STREAM_COMPRESSED
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      _sharedData.adcBuffer[n] = (uint16_t)constrain(magnitude[n], 0.0f, 65535.0f);
+  // Prepare streaming buffer (STREAM_COMPRESSED maps to incoherent accumulated magnitude of 8 pulses)
+  // Normalized to the ADC scale (0-4095)
+  float maxAccumulatedMag = 0.0f;
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+    float rawMagAccumulated = sqrtf(_accumulatedRaw[n]);
+    float normVal = rawMagAccumulated / dspGain;
+    _accumulatedRaw[n] = normVal;
+    if (n >= 120 && normVal > maxAccumulatedMag) {
+      maxAccumulatedMag = normVal;
     }
   }
 
-  _sharedData.accumulatedDataReady = true;
-  _sharedData.processingDone = true;
+  // Copy streaming values to localBuffer
+  uint8_t mode = 0;
+  taskENTER_CRITICAL(&_sharedData.spinlock);
+  mode = _sharedData.streamMode;
   taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+  static uint16_t localBuffer[Constant::ADC_SAMPLES];
+  if (mode == 0) { // STREAM_RAW
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      float biasedRaw = tempRaw[n] + Constant::ADC_DC_OFFSET;
+      localBuffer[n] = (uint16_t)constrain(biasedRaw, 0.0f, 65535.0f);
+    }
+  } else if (mode == 1) { // STREAM_DEMOD
+    // Demodulate the last pulse (tempRaw)
+    performIQDemodulation(tempRaw);
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      float demodMag = sqrtf(_demodI[n] * _demodI[n] + _demodQ[n] * _demodQ[n]);
+      localBuffer[n] = (uint16_t)constrain(demodMag, 0.0f, 65535.0f);
+    }
+  } else if (mode == 2) { // STREAM_COMPRESSED
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      localBuffer[n] = (uint16_t)constrain(_accumulatedRaw[n], 0.0f, 65535.0f);
+    }
+  }
+
+  // Copy localBuffer to old _sharedData.adcBuffer for general tracking
+  memcpy((void*)_sharedData.adcBuffer, localBuffer, sizeof(localBuffer));
+  
+  taskENTER_CRITICAL(&_sharedData.spinlock);
+  bool targetDetectedFinal = _sharedData.targetDetected;
+  float targetRangeFinal = _sharedData.targetRange;
+  float targetStrengthFinal = _sharedData.targetStrength;
+  uint16_t currentAngle = _sharedData.servoAngle;
+  
+  _sharedData.velocityRequested = false;
+  _sharedData.accumulatedDataReady = true;
+  _sharedData.requestServoStep = true;
+  taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+  // Directly perform calculations and UDP sending on Core 1
+  if (_com != nullptr) {
+    // Send target details
+    if (targetDetectedFinal) {
+      _com->sendTarget(targetRangeFinal, currentAngle, targetStrengthFinal, velocity);
+    }
+    
+    // Send frame
+    _com->sendFrame(_waveFrameId++, localBuffer, Constant::ADC_SAMPLES, currentAngle);
+  }
 
   // Reset accumulation for the next cycle
   _accumulatedCount = 0;
+  _peakIdxStored = -1;
+  taskENTER_CRITICAL(&_sharedData.spinlock);
+  _sharedData.pulseIndex = 0;
+  _sharedData.processingDone = true; // Signal transmitter that we are done with everything
+  taskEXIT_CRITICAL(&_sharedData.spinlock);
+}
+
+float ReceiverApp::calculateVelocity(int peakIndex) {
+  return 0.0f;
 }

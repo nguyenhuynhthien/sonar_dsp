@@ -1,3 +1,4 @@
+#include <SharedSonarData.h>
 #include "app/ReceiverApp.hpp"
 #include "app/ScannerApp.h"
 #include "app/TransmitterApp.h"
@@ -8,25 +9,35 @@
 #include <Constant.hpp>
 
 // Shared data block between Core 0 and Core 1
-SharedSonarData sharedData = {.triggerTx = false,
-                              .processingDone = false,
-                              .adcReady = false,
-                              .adcBuffer = {0},
-                              .spinlock = portMUX_INITIALIZER_UNLOCKED,
-                              .rxTaskHandle = nullptr,
-                              .servoTaskHandle = nullptr,
-                              .txBuffer = {0},
-                              .txPulseLen = 0,
-                              .simDelaySamples = 400, // Default to 400 samples delay (~2.5ms delay, simulating ~1.8 meters range)
-                              .simEnabled = true,     // Simulator enabled by default
-                              .servoAngle = 0,
-                              .angleUpdated = false,
-                              .targetRange = 0.0f,
-                              .targetStrength = 0.0f,
-                              .targetDetected = false,
-                              .streamMode = 0,
-                              .accumulatedDataReady = false,
-                              .requestServoStep = false};
+SharedSonarData sharedData = {
+    .triggerTx = false,
+    .processingDone = false,
+    .adcReady = false,
+    .adcBuffer = {0},
+    .spinlock = portMUX_INITIALIZER_UNLOCKED,
+    .rxTaskHandle = nullptr,
+    .servoTaskHandle = nullptr,
+    .rxCore0TaskHandle = nullptr,
+    .waveSendTaskHandle = nullptr,
+    .txBuffer = {0},
+    .txPulseLen = 0,
+    .simDelaySamples = 400, // Default to 400 samples delay (~2.5ms delay, simulating ~1.8 meters range)
+    .simEnabled = true,     // Simulator enabled by default
+    .servoAngle = 0,
+    .angleUpdated = false,
+    .targetRange = 0.0f,
+    .targetStrength = 0.0f,
+    .targetDetected = false,
+    .streamMode = 0,
+    .accumulatedDataReady = false,
+    .requestServoStep = false,
+    .waveSendBuffer = {0},
+    .waveSendAngle = 0,
+    .waveSendReady = false,
+    .peakIndexForVelocity = -1,
+    .velocityRequested = false,
+    .pulseIndex = 0
+};
 
 // WiFi SSID, password and MDNS hostname
 const char *ssid = "Noel";
@@ -39,9 +50,9 @@ DacService dac2(DAC_CHANNEL_2);
 ComManager com(ssid, password, hostName);
 ServoService servoService;
 ScannerApp scannerApp(servoService, sharedData);
+ReceiverApp rxApp(sharedData);
 TransmitterApp txApp(com, sharedData);
 SimulatorApp simulatorApp(sharedData);
-ReceiverApp rxApp(sharedData);
 SyncSignalApp syncApp(sharedData, dac1, dac2, simulatorApp);
 
 void setup() {
@@ -53,23 +64,22 @@ void setup() {
   scannerApp.begin();
   txApp.begin();
   rxApp.begin();
+  rxApp.setComManager(com); // Set ComManager reference on rxApp for Core 1 sending
   simulatorApp.begin();
   syncApp.begin();
 
   Serial.println("Drivers and Services initialized.");
 
-  // Pin Task0 to Core 0: High-priority hardware Pulse Generation and Wi-Fi UDP
-  // networking
+  // Pin Task0 to Core 0: High-priority hardware Pulse Generation and UDP command polling
   xTaskCreatePinnedToCore(
       [](void *param) {
         Serial.println("Transmitter Task (Core 0) started.");
-        com.begin(); // Initialize UDP socket and WiFi on Core 0 for thread
-                     // safety
+        com.begin(); // Initialize UDP socket and WiFi on Core 0 for thread safety
         while (true) {
           txApp.run();
         }
       },
-      "TxTask", Constant::TASK_STACK_SIZE, nullptr, Constant::TASK_PRIORITY,
+      "TxTask", 4096, nullptr, Constant::TASK_PRIORITY,
       nullptr,
       0 // Pinned to Core 0
   );
@@ -113,26 +123,24 @@ void setup() {
       0 // Pinned to Core 0
   );
 
-  // Pin Task1 to Core 1: Critical real-time DSP pipelines and high-speed ADC
-  // sampling
+  // Pin Task1 to Core 1: Critical real-time DSP pipelines, sampling, and UDP transmission
   xTaskCreatePinnedToCore(
       [](void *param) {
         Serial.println("Sync and DSP Task (Core 1) started.");
         while (true) {
           // 1. SyncSignalApp waits for trigger, prepares buffers, runs ADC/DAC sync loop
           syncApp.run();
-          // 2. Once syncApp completes sampling, ReceiverApp processes DSP pipeline
+          // 2. Once syncApp completes sampling, ReceiverApp processes DSP pipeline and sends UDP
           rxApp.run();
         }
       },
-      "RxTask", Constant::TASK_STACK_SIZE, nullptr, Constant::TASK_PRIORITY,
+      "RxTask", 4096, nullptr, Constant::TASK_PRIORITY,
       &sharedData.rxTaskHandle,
       1 // Pinned to Core 1
   );
 }
 
 void loop() {
-  // Main loop does nothing as the work is executed asynchronously by Core 0/1
-  // tasks.
+  // Main loop does nothing as the work is executed asynchronously by Core 0/1 tasks.
   vTaskDelay(pdMS_TO_TICKS(Constant::LOOP_DELAY_MS));
 }

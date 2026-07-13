@@ -15,7 +15,7 @@ void TransmitterApp::begin() {
 }
 
 void TransmitterApp::run() {
-    _com.update();
+    _com.update(); // Poll UDP socket commands
 
     // Send angle if it changed and we're not streaming
     bool angleUpdated = false;
@@ -64,7 +64,7 @@ void TransmitterApp::run() {
             xTaskNotifyGive(_sharedData.rxTaskHandle);
         }
 
-        // 2. Wait for Core 1 (ReceiverApp) to finish sampling (which does both DAC output and ADC sampling)
+        // 2. Wait for Core 1 (ReceiverApp) to finish sampling & DSP & UDP sending
         uint32_t timeoutTicks = pdMS_TO_TICKS(Constant::TX_RESPONSE_TIMEOUT_MS);
         uint32_t elapsedTicks = 0;
         while (!_sharedData.processingDone && elapsedTicks < timeoutTicks) {
@@ -72,41 +72,12 @@ void TransmitterApp::run() {
             elapsedTicks++;
         }
 
-        // 3. Retrieve sampled buffer and stream via UDP
-        if (_sharedData.processingDone) {
-            uint16_t angle;
-            bool targetDetected = false;
-            float targetRange = 0.0f;
-            float targetStrength = 0.0f;
-            bool dataReady = false;
+        // Clear processingDone for the next cycle
+        taskENTER_CRITICAL(&_sharedData.spinlock);
+        _sharedData.processingDone = false;
+        taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-            taskENTER_CRITICAL(&_sharedData.spinlock);
-            dataReady = _sharedData.accumulatedDataReady;
-            if (dataReady) {
-                memcpy(_localAdcBuffer, (const void*)_sharedData.adcBuffer, sizeof(_localAdcBuffer));
-                angle = _sharedData.servoAngle;
-                targetDetected = _sharedData.targetDetected;
-                targetRange = _sharedData.targetRange;
-                targetStrength = _sharedData.targetStrength;
-                _sharedData.targetDetected = false; // Reset
-                _sharedData.accumulatedDataReady = false; // Reset
-                _sharedData.requestServoStep = true; // Request servo step after 8 accumulated pulses
-            }
-            _sharedData.processingDone = false;
-            taskEXIT_CRITICAL(&_sharedData.spinlock);
-
-            if (dataReady) {
-                _com.sendFrame(_frameId++, _localAdcBuffer, Constant::ADC_SAMPLES, angle);
-
-                if (targetDetected) {
-                    _com.sendTarget(targetRange, angle, targetStrength);
-                }
-            }
-        } else {
-            Serial.println("Error: Timeout waiting for Core 1 to complete sampling!");
-        }
-
-        // Maintain configured rate/period
+        // Maintain configured rate/period (PRI)
         unsigned long duration = millis() - startTime;
         if (duration < Constant::TX_PERIOD_MS) {
             vTaskDelay(pdMS_TO_TICKS(Constant::TX_PERIOD_MS - duration));
