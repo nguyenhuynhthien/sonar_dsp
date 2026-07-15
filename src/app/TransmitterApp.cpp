@@ -72,6 +72,12 @@ void TransmitterApp::run() {
             elapsedTicks++;
         }
 
+        // Wait for ScannerTask to process the step and clear requestServoStep
+        while (_sharedData.requestServoStep && elapsedTicks < timeoutTicks) {
+            vTaskDelay(1);
+            elapsedTicks++;
+        }
+
         // Clear processingDone for the next cycle
         taskENTER_CRITICAL(&_sharedData.spinlock);
         _sharedData.processingDone = false;

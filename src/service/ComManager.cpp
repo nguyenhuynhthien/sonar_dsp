@@ -99,7 +99,7 @@ bool ComManager::isStreaming() {
     return _isStreaming;
 }
 
-void ComManager::sendFrame(uint16_t frameId, const uint16_t* samples, size_t size, uint16_t angle) {
+void ComManager::sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle) {
     if (!_isStreaming || size != Constant::ADC_SAMPLES) {
         return;
     }
@@ -121,7 +121,7 @@ void ComManager::sendFrame(uint16_t frameId, const uint16_t* samples, size_t siz
 
         _udp.beginPacket(_remoteIp, _remotePort);
         _udp.write((const uint8_t*)&header, sizeof(header));
-        _udp.write((const uint8_t*)(samples + i * CHUNK_SAMPLES), CHUNK_SAMPLES * sizeof(uint16_t));
+        _udp.write((const uint8_t*)(samples + i * CHUNK_SAMPLES), CHUNK_SAMPLES * sizeof(int16_t));
         _udp.endPacket();
 
         // Pace transmission using configured delay to avoid WiFi buffer overflow
@@ -141,12 +141,12 @@ void ComManager::sendAngle(uint16_t angle) {
     _udp.endPacket();
 }
 
-void ComManager::sendTarget(float range, uint16_t angle, float strength, float velocity) {
+void ComManager::sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude, int32_t velocityBin) {
     if (_remotePort == 0) {
         return;
     }
     char buf[64];
-    int len = snprintf(buf, sizeof(buf), "target:%.2f,%d,%.1f,%.2f", range, angle, strength, velocity);
+    int len = snprintf(buf, sizeof(buf), "target:%d,%d,%d,%d", rangeBin, angle, amplitude, velocityBin);
     
     _udp.beginPacket(_remoteIp, _remotePort);
     _udp.write((const uint8_t*)buf, len);

@@ -136,7 +136,7 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
                 float t = (float)i / fs;
                 float totalPhase = 2.0f * M_PI * (fc * t + fd * ((float)p * PRI)) + (M_PI / 6.0f);
                 carrier = sign * cosf(totalPhase);
-
+                
                 // Scale deviation with the beam scale
                 float distortedDeviation = carrier * 127.0f * activeBeamScale;
 

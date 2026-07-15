@@ -25,8 +25,8 @@ SharedSonarData sharedData = {
     .simEnabled = true,     // Simulator enabled by default
     .servoAngle = 0,
     .angleUpdated = false,
-    .targetRange = 0.0f,
-    .targetStrength = 0.0f,
+    .targetRange = 0,
+    .targetStrength = 0,
     .targetDetected = false,
     .streamMode = 0,
     .accumulatedDataReady = false,
@@ -96,24 +96,26 @@ void setup() {
             taskENTER_CRITICAL(&sharedData.spinlock);
             if (sharedData.requestServoStep) {
               stepRequested = true;
-              sharedData.requestServoStep = false;
             }
             taskEXIT_CRITICAL(&sharedData.spinlock);
           }
 
-          if (com.isServoEnabled()) {
-            if (streaming) {
-              if (stepRequested) {
-                scannerApp.step();
-              }
-              vTaskDelay(pdMS_TO_TICKS(5)); // Poll frequently (every 5ms) for low latency
-            } else {
+          if (stepRequested) {
+            if (com.isServoEnabled()) {
+              scannerApp.step();
+            }
+            taskENTER_CRITICAL(&sharedData.spinlock);
+            sharedData.requestServoStep = false;
+            taskEXIT_CRITICAL(&sharedData.spinlock);
+            vTaskDelay(pdMS_TO_TICKS(5));
+          } else {
+            if (com.isServoEnabled() && !streaming) {
               // When not streaming, step independently on a timer (e.g. every 40ms)
               scannerApp.step();
               vTaskDelay(pdMS_TO_TICKS(40));
+            } else {
+              vTaskDelay(pdMS_TO_TICKS(10)); // Poll delay when idle or waiting
             }
-          } else {
-            vTaskDelay(pdMS_TO_TICKS(20)); // Idle poll delay when servo is disabled
           }
         }
       },

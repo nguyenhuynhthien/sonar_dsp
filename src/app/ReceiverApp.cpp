@@ -6,27 +6,39 @@
 #include <math.h>
 #include <esp_dsp.h>
 
+// Custom Q15 convolution implementation
+static esp_err_t dsps_conv_q15(const int16_t *Signal, const int siglen, const int16_t *Kernel, const int kernlen, int16_t *convout) {
+    int out_len = siglen + kernlen - 1;
+    for (int n = 0; n < out_len; ++n) {
+        int32_t sum = 0;
+        int k_start = (n >= siglen) ? (n - siglen + 1) : 0;
+        int k_end = (n < kernlen) ? n : (kernlen - 1);
+        for (int k = k_start; k <= k_end; ++k) {
+            sum += ((int32_t)Signal[n - k] * Kernel[k] + 16384) >> 15;
+        }
+        convout[n] = (int16_t)constrain(sum, -32768, 32767);
+    }
+    return ESP_OK;
+}
+
 ReceiverApp::ReceiverApp(SharedSonarData &sharedData)
     : _sharedData(sharedData), _pingCounter(0) {}
 
 void ReceiverApp::begin() {
-  // Allocate essential DSP buffers only (40KB total)
-  _demodI = new (std::nothrow) float[Constant::ADC_SAMPLES];
-  _demodQ = new (std::nothrow) float[Constant::ADC_SAMPLES];
-  _filteredI = new (std::nothrow) float[Constant::ADC_SAMPLES];
-  _filteredQ = new (std::nothrow) float[Constant::ADC_SAMPLES];
-  _accumulatedRaw = new (std::nothrow) float[Constant::ADC_SAMPLES];
+  size_t convSize = Constant::ADC_SAMPLES + Constant::BARKER13_PULSE_LEN;
+  _demodI = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+  _demodQ = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+  _filteredI = new (std::nothrow) int16_t[convSize];
+  _filteredQ = new (std::nothrow) int16_t[convSize];
+  _tempConv1 = new (std::nothrow) int16_t[convSize];
+  _tempConv2 = new (std::nothrow) int16_t[convSize];
+  _accumulatedRaw = new (std::nothrow) int32_t[Constant::ADC_SAMPLES];
 
-  bool allocSuccess = _demodI && _demodQ && _filteredI && _filteredQ && _accumulatedRaw;
+  bool allocSuccess = _demodI && _demodQ && _filteredI && _filteredQ && 
+                      _tempConv1 && _tempConv2 && _accumulatedRaw;
 
   if (!allocSuccess) {
-    Serial.println("Error: Failed to allocate DSP/accumulation buffers on heap!");
-  }
-
-  // Initialize ESP-DSP Radix-2 FFT factors
-  esp_err_t err = dsps_fft2r_init_fc32(NULL, Constant::SLOW_TIME_LEN);
-  if (err != ESP_OK) {
-    Serial.printf("Error: ESP-DSP FFT initialization failed (code %d)\n", err);
+    Serial.println("Error: Failed to allocate Q15 DSP/accumulation buffers on heap!");
   }
 
   initDSPCoefficients();
@@ -45,61 +57,80 @@ void ReceiverApp::initDSPCoefficients() {
 
   // Matched filter is time-reversed conjugate of demodulated TX pulse
   for (int i = 0; i < pulseLen; ++i) {
-    float x = (float)localTxBuffer[i] -
-              Constant::ADC_DC_OFFSET / 16.0f; // Scale reference to match input
+    int16_t x = (int16_t)localTxBuffer[i] - Constant::DAC_DC_BIAS; // Keep original 8-bit scale [-128, 127]
 
-    float refCos = 0.0f;
-    float refSin = 0.0f;
+    int16_t refCos = 0;
+    int16_t refSin = 0;
     switch (i & 3) {
     case 0:
-      refCos = 1.0f;
-      refSin = 0.0f;
+      refCos = Constant::Q15_MAX;
+      refSin = 0;
       break;
     case 1:
-      refCos = 0.0f;
-      refSin = 1.0f;
+      refCos = 0;
+      refSin = Constant::Q15_MAX;
       break;
     case 2:
-      refCos = -1.0f;
-      refSin = 0.0f;
+      refCos = Constant::Q15_MIN;
+      refSin = 0;
       break;
     case 3:
-      refCos = 0.0f;
-      refSin = -1.0f;
+      refCos = 0;
+      refSin = Constant::Q15_MIN;
       break;
     }
 
     // matched filter: h(t) = s*(T - t)
     int filterIdx = pulseLen - 1 - i;
-    _hI[filterIdx] = x * refCos;
-    _hQ[filterIdx] = -x * refSin; // conjugate
+    _hI[filterIdx] = (int16_t)(((int32_t)x * refCos) >> 15);
+    _hQ[filterIdx] = - (int16_t)(((int32_t)x * refSin) >> 15); // conjugate
   }
+
 }
 
-void ReceiverApp::performIQDemodulation(const float *rawSamples) {
+void ReceiverApp::performIQDemodulation(const int16_t *rawSamples) {
   if (!_demodI || !_demodQ)
     return;
 
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    float x = rawSamples[n];
+    int16_t x = rawSamples[n];
     switch (n & 3) {
     case 0:
       _demodI[n] = x;
-      _demodQ[n] = 0.0f;
+      _demodQ[n] = 0;
       break;
     case 1:
-      _demodI[n] = 0.0f;
+      _demodI[n] = 0;
       _demodQ[n] = -x;
       break;
     case 2:
       _demodI[n] = -x;
-      _demodQ[n] = 0.0f;
+      _demodQ[n] = 0;
       break;
     case 3:
-      _demodI[n] = 0.0f;
+      _demodI[n] = 0;
       _demodQ[n] = x;
       break;
     }
+  }
+
+  // Apply 4-sample Moving Average FIR filter to smooth demodulated signals and remove carrier ripple
+  static int16_t tempDemodI[Constant::ADC_SAMPLES];
+  static int16_t tempDemodQ[Constant::ADC_SAMPLES];
+  memcpy(tempDemodI, _demodI, sizeof(tempDemodI));
+  memcpy(tempDemodQ, _demodQ, sizeof(tempDemodQ));
+
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+    int32_t sumDemodI = 0;
+    int32_t sumDemodQ = 0;
+    for (int d = 0; d < 4; ++d) {
+      if (n - d >= 0) {
+        sumDemodI += tempDemodI[n - d];
+        sumDemodQ += tempDemodQ[n - d];
+      }
+    }
+    _demodI[n] = (int16_t)(sumDemodI >> 2);
+    _demodQ[n] = (int16_t)(sumDemodQ >> 2);
   }
 }
 
@@ -107,33 +138,53 @@ void ReceiverApp::performMatchedFiltering() {
   if (!_demodI || !_demodQ || !_filteredI || !_filteredQ)
     return;
 
-  // Real-time matched filtering: convolve I/Q demodulated signal with hI/hQ
+  // Real-time matched filtering in a single optimized pass.
+  // Since coefficients represent carrier sines/cosines at 40kHz/160kHz,
+  // either coefI or coefQ is zero at any index. We skip zero multiplications to save 4x operations.
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    float sumI = 0.0f;
-    float sumQ = 0.0f;
+    int32_t sumI = 0;
+    int32_t sumQ = 0;
 
     for (int k = 0; k < _filterLen; ++k) {
       if (n >= k) {
-        float sigI = _demodI[n - k];
-        float sigQ = _demodQ[n - k];
-        float coefI = _hI[k];
-        float coefQ = _hQ[k];
+        int16_t sigI = _demodI[n - k];
+        int16_t sigQ = _demodQ[n - k];
+        int16_t coefI = _hI[k];
+        int16_t coefQ = _hQ[k];
 
-        // Complex multiplication: (sigI + j*sigQ) * (coefI + j*coefQ)
-        if (coefI != 0.0f) {
-          sumI += sigI * coefI;
-          sumQ += sigQ * coefI;
+        if (coefI != 0) {
+          sumI += (int32_t)sigI * coefI;
+          sumQ += (int32_t)sigQ * coefI;
         }
-        if (coefQ != 0.0f) {
-          sumI -= sigQ * coefQ;
-          sumQ += sigI * coefQ;
+        if (coefQ != 0) {
+          sumI -= (int32_t)sigQ * coefQ;
+          sumQ += (int32_t)sigI * coefQ;
         }
       }
     }
 
-    _filteredI[n] = sumI;
-    _filteredQ[n] = sumQ;
+    _filteredI[n] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
+    _filteredQ[n] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
   }
+}
+
+// Fast integer square root helper
+static uint32_t isqrt32(uint32_t n) {
+    uint32_t res = 0;
+    uint32_t bit = 1u << 30; // The second-to-top bit is set
+    while (bit > n) {
+        bit >>= 2;
+    }
+    while (bit != 0) {
+        if (n >= res + bit) {
+            n -= res + bit;
+            res = (res >> 1) + bit;
+        } else {
+            res >>= 1;
+        }
+        bit >>= 2;
+    }
+    return res;
 }
 
 void ReceiverApp::run() {
@@ -148,84 +199,83 @@ void ReceiverApp::run() {
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 
   // 1. Digital DC Filter: compute the exact mean of the 2048 samples
-  float sum = 0.0f;
+  int32_t sum = 0;
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
     sum += localRawSamples[n];
   }
-  float mean = sum / (float)Constant::ADC_SAMPLES;
+  int16_t mean = sum / (int)Constant::ADC_SAMPLES;
 
-  // 2. DC-filter the pulse to a local temp array
-  static float tempRaw[Constant::ADC_SAMPLES];
+  // 2. DC-filter the pulse to a local temp array and convert to Q15 by shifting left by 4
+  static int16_t tempRaw[Constant::ADC_SAMPLES];
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    tempRaw[n] = (float)localRawSamples[n] - mean;
+    tempRaw[n] = (int16_t)(localRawSamples[n] - mean) << 4;
   }
 
   // 3. Process IQ Demodulation and Matched Filtering for the current pulse
   performIQDemodulation(tempRaw);
   performMatchedFiltering();
 
-  float dspGain = (_filterLen == (int)Constant::BARKER13_PULSE_LEN) ? (52.0f * 127.0f) : (16.0f * 127.0f);
-
-  // Step 1: Scan vertically on Column 0 (the very first pulse, accumulatedCount == 0)
-  // to find the range peak index r_peak (_peakIdxStored)
+  // Initialize accumulated raw values array if first pulse
   if (_accumulatedCount == 0) {
-    float maxRawMag_single = 0.0f;
-    _peakIdxStored = -1;
-
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      float rawMag0 = sqrtf(_filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n]);
-      float normMag0 = rawMag0 / dspGain;
-
-      // Skip the first 120 samples to avoid TX pulse leakage
-      if (n >= 120 && normMag0 > maxRawMag_single) {
-        maxRawMag_single = normMag0;
-        _peakIdxStored = n;
-      }
-    }
-
-    // Dynamic threshold based on pulse type: Single Pulse needs higher threshold (300.0f) due to higher noise floor
-    float localThreshold = (_filterLen == (int)Constant::BARKER13_PULSE_LEN) ? 120.0f : 300.0f;
-    if (_peakIdxStored != -1 && maxRawMag_single < localThreshold) {
-      _peakIdxStored = -1;
-    }
-
-    // Initialize accumulated raw values array for peak detection
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      _accumulatedRaw[n] = _filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n];
+      _accumulatedRaw[n] = ((int32_t)_filteredI[n] * _filteredI[n] + (int32_t)_filteredQ[n] * _filteredQ[n]) >> 4;
     }
   } else {
-    // Accumulate incoherent energy for peak validation/detection
+    // Accumulate incoherent energy for smoother peak detection
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      _accumulatedRaw[n] += _filteredI[n] * _filteredI[n] + _filteredQ[n] * _filteredQ[n];
+      _accumulatedRaw[n] += ((int32_t)_filteredI[n] * _filteredI[n] + (int32_t)_filteredQ[n] * _filteredQ[n]) >> 4;
     }
   }
 
-  // Extract the complex value of this ping at _peakIdxStored for the horizontal FFT
-  if (_peakIdxStored != -1) {
-    // Apply a 4-sample moving average (LPF) around the peak to reconstruct a full (I, Q) pair.
-    // This ensures both components are non-zero regardless of whether peakIdx is even or odd.
-    float sumI = 0.0f;
-    float sumQ = 0.0f;
-    int count = 0;
-    for (int d = -1; d <= 2; ++d) {
-      int idx = _peakIdxStored + d;
-      if (idx >= 0 && idx < (int)Constant::ADC_SAMPLES) {
-        sumI += _filteredI[idx];
-        sumQ += _filteredQ[idx];
-        count++;
+  // Store the complex samples of the ping history for ALL indices (or just around the peak?)
+  // To keep it simple and preserve current architecture, we'll find peak later.
+  // Actually, we must store the complex values at ALL indices for all pulses to find the peak correctly later,
+  // but we don't have enough memory for [16][2048].
+  // Strategy: Picking peak at pulse #4 (middle of accumulation) or first pulse. 
+  // Let's improve the first-pulse peak detection to be at least a bit more robust or wait for more pulses.
+  
+  // Improvement: Always use a consistent peak index for the entire batch of 8 pulses.
+  // We only detect the peak update once at the start of accumulation to maintain phase coherence.
+  if (_accumulatedCount == 4 || (_accumulatedCount == 0 && _peakIdxStored == -1)) {
+    int32_t maxAcc = 0;
+    int bestIdx = -1;
+    for (int n = Constant::TX_LEAKAGE_BLANK_SAMPLES; n < (int)Constant::ADC_SAMPLES; ++n) {
+        if (_accumulatedRaw[n] > maxAcc) {
+            maxAcc = _accumulatedRaw[n];
+            bestIdx = n;
+        }
+    }
+    _peakIdxStored = bestIdx;
+
+    if (_peakIdxStored != -1) {
+      int32_t dspGain = (_filterLen == (int)Constant::BARKER13_PULSE_LEN) ? 
+                        ((int32_t)(Constant::BARKER13_PULSE_LEN / 2) * Constant::DAC_DC_BIAS) : 
+                        ((int32_t)(Constant::FILTER_COEFFS_LEN / 2) * Constant::DAC_DC_BIAS);
+      int32_t baseThreshold = (_filterLen == (int)Constant::BARKER13_PULSE_LEN) ? Constant::BASE_BARKER13_THRESHOLD : Constant::BASE_SINGLE_PULSE_THRESHOLD;
+      int32_t localThreshold = baseThreshold << (14 - Constant::MATCHED_FILTER_SHIFT);
+      int64_t threshVal = (int64_t)localThreshold * dspGain;
+      
+      int numPings = _accumulatedCount + 1;
+      int64_t estimatedMaxValSq = ((int64_t)maxAcc << 4) / numPings;
+      if (estimatedMaxValSq * Constant::TARGET_THRESHOLD_SCALE_SQ < threshVal * threshVal) {
+        _peakIdxStored = -1; // Under threshold, reject target
       }
     }
-    _fftReal[_accumulatedCount] = sumI / (float)count;
-    _fftImag[_accumulatedCount] = sumQ / (float)count;
+  }
+
+  // Extract the complex value of this ping at the CURRENTLY detected peak
+  if (_peakIdxStored != -1) {
+    _fftReal[_accumulatedCount] = _filteredI[_peakIdxStored];
+    _fftImag[_accumulatedCount] = _filteredQ[_peakIdxStored];
   } else {
-    _fftReal[_accumulatedCount] = 0.0f;
-    _fftImag[_accumulatedCount] = 0.0f;
+    _fftReal[_accumulatedCount] = 0;
+    _fftImag[_accumulatedCount] = 0;
   }
 
   _accumulatedCount++;
 
   if (_accumulatedCount < 8) {
-    // Not enough pulses accumulated yet, signal Core 0 to continue firing
+    // Not enough pulses accumulated yet (using 8 pulses to save RAM/Time)
     taskENTER_CRITICAL(&_sharedData.spinlock);
     _sharedData.pulseIndex = _accumulatedCount;
     _sharedData.processingDone = true;
@@ -233,71 +283,61 @@ void ReceiverApp::run() {
     return;
   }
 
-  // We have integrated 8 pulses.
-  // Step 2: Quét ngang chạy FFT tại hàng _peakIdxStored
-  float velocity = 0.0f;
-  float cleanRawMag = 0.0f;
+  // We have integrated 8 pulses. 
+  // Step 2: Quét ngang chạy FFT 16 điểm (8 data points + 8 zero padding)
+  int32_t velocity_bin = 0;
+  int32_t cleanRawMag = 0;
+  
+  // Final check on target detection using integrated energy threshold
   bool targetDetected = (_peakIdxStored != -1);
 
   if (targetDetected) {
-    // Run 8-point DFT/FFT on the stored ping history at _peakIdxStored
-    float realOut[8] = {0.0f};
-    float imagOut[8] = {0.0f};
-    for (int k = 0; k < 8; ++k) {
-      float sumReal = 0.0f;
-      float sumImag = 0.0f;
+    // Run 16-point DFT with Zero Padding (8 data + 8 zeros)
+    int32_t realOut[Constant::DOPPLER_FFT_LEN] = {0};
+    int32_t imagOut[Constant::DOPPLER_FFT_LEN] = {0};
+    
+    for (int k = 0; k < (int)Constant::DOPPLER_FFT_LEN; ++k) { 
+      float sumReal = 0;
+      float sumImag = 0;
+      // Only iterate up to 8 for the data pings (N=8 data points)
       for (int n = 0; n < 8; ++n) {
-        float angle = -2.0f * M_PI * k * n / 8.0f;
+        float angle = -2.0f * M_PI * k * n / (float)Constant::DOPPLER_FFT_LEN;
         float cosVal = cosf(angle);
         float sinVal = sinf(angle);
-        sumReal += _fftReal[n] * cosVal - _fftImag[n] * sinVal;
-        sumImag += _fftReal[n] * sinVal + _fftImag[n] * cosVal;
+
+        sumReal += (float)_fftReal[n] * cosVal - (float)_fftImag[n] * sinVal;
+        sumImag += (float)_fftReal[n] * sinVal + (float)_fftImag[n] * cosVal;
       }
-      realOut[k] = sumReal;
-      imagOut[k] = sumImag;
+      realOut[k] = (int32_t)sumReal;
+      imagOut[k] = (int32_t)sumImag;
     }
 
     // Find peak frequency bin
-    float maxFftMag = -1.0f;
-    int doppler_bin = 0;
-    for (int k = 0; k < 8; ++k) {
-      float fftMag = realOut[k] * realOut[k] + imagOut[k] * imagOut[k];
+    velocity_bin = 0;
+    int64_t maxFftMag = -1;
+    for (int k = 0; k < (int)Constant::DOPPLER_FFT_LEN; ++k) {
+      int64_t fftMag = (int64_t)realOut[k] * realOut[k] + (int64_t)imagOut[k] * imagOut[k];
       if (fftMag > maxFftMag) {
         maxFftMag = fftMag;
-        doppler_bin = k;
+        velocity_bin = k;
       }
     }
 
-    // Map doppler_bin to fd
-    float fd = 0.0f;
-    float deltaF = 1.0f / (8.0f * ((float)Constant::TX_PERIOD_MS / 1000.0f)); // 8.3333 Hz
-    if (doppler_bin < 4) {
-      fd = doppler_bin * deltaF;
-    } else {
-      fd = (doppler_bin - 8) * deltaF;
+    // Convert circular bin index to signed Doppler index (-N/2 to N/2-1)
+    if (velocity_bin >= (int)Constant::DOPPLER_FFT_LEN / 2) {
+        velocity_bin -= (int)Constant::DOPPLER_FFT_LEN;
     }
 
-    // Convert to velocity: v = fd * c / (2 * fc)
-    velocity = fd * (Constant::SPEED_OF_SOUND / (2.0f * (float)Constant::CENTER_FREQ));
-
-    // Clean unscaled coherent integrated amplitude (8x gain)
-    cleanRawMag = sqrtf(maxFftMag);
+    cleanRawMag = (int32_t)sqrtf((float)maxFftMag);
   }
 
   // Update target details
   if (targetDetected && _peakIdxStored != -1) {
-    int tofIdx = _peakIdxStored - _filterLen;
-    if (tofIdx < 0)
-      tofIdx = 0;
-
-    float range = ((float)tofIdx * Constant::SPEED_OF_SOUND) /
-                  (2.0f * (float)Constant::SAMPLE_RATE);
-
     taskENTER_CRITICAL(&_sharedData.spinlock);
     _sharedData.targetDetected = true;
-    _sharedData.targetRange = range;
-    _sharedData.targetStrength = cleanRawMag; // Coherent sum unscaled magnitude (8x gain)
-    _sharedData.peakIndexForVelocity = _peakIdxStored;
+    _sharedData.targetRange = _peakIdxStored; // Range bin index
+    _sharedData.targetStrength = cleanRawMag;
+    _sharedData.peakIndexForVelocity = velocity_bin; // Doppler bin index
     _sharedData.velocityRequested = true;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
   } else {
@@ -307,40 +347,26 @@ void ReceiverApp::run() {
     taskEXIT_CRITICAL(&_sharedData.spinlock);
   }
 
-  // Prepare streaming buffer (STREAM_COMPRESSED maps to incoherent accumulated magnitude of 8 pulses)
-  // Normalized to the ADC scale (0-4095)
-  float maxAccumulatedMag = 0.0f;
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    float rawMagAccumulated = sqrtf(_accumulatedRaw[n]);
-    float normVal = rawMagAccumulated / dspGain;
-    _accumulatedRaw[n] = normVal;
-    if (n >= 120 && normVal > maxAccumulatedMag) {
-      maxAccumulatedMag = normVal;
-    }
-  }
-
   // Copy streaming values to localBuffer
   uint8_t mode = 0;
   taskENTER_CRITICAL(&_sharedData.spinlock);
   mode = _sharedData.streamMode;
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-  static uint16_t localBuffer[Constant::ADC_SAMPLES];
+  static int16_t localBuffer[Constant::ADC_SAMPLES];
   if (mode == 0) { // STREAM_RAW
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      float biasedRaw = tempRaw[n] + Constant::ADC_DC_OFFSET;
-      localBuffer[n] = (uint16_t)constrain(biasedRaw, 0.0f, 65535.0f);
+      localBuffer[n] = tempRaw[n];
     }
   } else if (mode == 1) { // STREAM_DEMOD
-    // Demodulate the last pulse (tempRaw)
     performIQDemodulation(tempRaw);
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      float demodMag = sqrtf(_demodI[n] * _demodI[n] + _demodQ[n] * _demodQ[n]);
-      localBuffer[n] = (uint16_t)constrain(demodMag, 0.0f, 65535.0f);
+      int32_t sqVal = (int32_t)_demodI[n] * _demodI[n] + (int32_t)_demodQ[n] * _demodQ[n];
+      localBuffer[n] = (int16_t)constrain(isqrt32(sqVal), 0, Constant::Q15_MAX);
     }
   } else if (mode == 2) { // STREAM_COMPRESSED
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      localBuffer[n] = (uint16_t)constrain(_accumulatedRaw[n], 0.0f, 65535.0f);
+      localBuffer[n] = (int16_t)constrain(isqrt32(2 * _accumulatedRaw[n]), 0, Constant::Q15_MAX);
     }
   }
 
@@ -349,8 +375,9 @@ void ReceiverApp::run() {
   
   taskENTER_CRITICAL(&_sharedData.spinlock);
   bool targetDetectedFinal = _sharedData.targetDetected;
-  float targetRangeFinal = _sharedData.targetRange;
-  float targetStrengthFinal = _sharedData.targetStrength;
+  int32_t targetRangeFinal = _sharedData.targetRange;
+  int32_t targetStrengthFinal = _sharedData.targetStrength;
+  int32_t peakIndexFinal = _sharedData.peakIndexForVelocity;
   uint16_t currentAngle = _sharedData.servoAngle;
   
   _sharedData.velocityRequested = false;
@@ -362,7 +389,7 @@ void ReceiverApp::run() {
   if (_com != nullptr) {
     // Send target details
     if (targetDetectedFinal) {
-      _com->sendTarget(targetRangeFinal, currentAngle, targetStrengthFinal, velocity);
+      _com->sendTarget(targetRangeFinal, currentAngle, targetStrengthFinal, peakIndexFinal);
     }
     
     // Send frame
@@ -378,6 +405,6 @@ void ReceiverApp::run() {
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 }
 
-float ReceiverApp::calculateVelocity(int peakIndex) {
-  return 0.0f;
+int32_t ReceiverApp::calculateVelocity(int peakIndex) {
+  return 0;
 }

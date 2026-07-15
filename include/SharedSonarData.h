@@ -29,15 +29,15 @@ struct SharedSonarData {
     volatile bool angleUpdated;
 
     // Target information and streaming configuration
-    volatile float targetRange;
-    volatile float targetStrength;
+    volatile int32_t targetRange;
+    volatile int32_t targetStrength;
     volatile bool targetDetected;
     volatile uint8_t streamMode; // 0: raw, 1: demod, 2: compressed
     volatile bool accumulatedDataReady;
     volatile bool requestServoStep;
 
     // Waveform and velocity synchronization variables
-    uint16_t waveSendBuffer[Constant::ADC_SAMPLES];
+    int16_t waveSendBuffer[Constant::ADC_SAMPLES];
     volatile uint16_t waveSendAngle;
     volatile bool waveSendReady;
     volatile int peakIndexForVelocity;

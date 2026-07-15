@@ -13,9 +13,22 @@ constexpr uint16_t ADC_RESOLUTION_MAX = 4095;
 constexpr float ADC_DC_OFFSET = 2048.0f;
 constexpr uint8_t DAC_DC_BIAS = 127;
 constexpr size_t SLOW_TIME_LEN = 16;
+constexpr size_t DOPPLER_FFT_LEN = 16;
 constexpr float CPU_CYCLES_PER_SAMPLE_FACTOR = 6.25f;
 constexpr float SAMPLING_CALIBRATION_FACTOR = 1.10f;
 constexpr float SPEED_OF_SOUND = 343.0f; // Speed of sound in air in m/s
+
+// Q15 fixed-point DSP constants
+constexpr int16_t Q15_MAX = 32767;
+constexpr int16_t Q15_MIN = -32768;
+constexpr int16_t Q15_DAC_SCALE = 256;
+constexpr int32_t MATCHED_FILTER_ROUND_OFFSET = 512;
+constexpr int MATCHED_FILTER_SHIFT = 10;
+constexpr int64_t TARGET_THRESHOLD_SCALE_SQ = 1048576LL;
+constexpr int32_t BASE_BARKER13_THRESHOLD = 120;
+constexpr int32_t BASE_SINGLE_PULSE_THRESHOLD = 300;
+constexpr int TX_LEAKAGE_BLANK_SAMPLES = 220;
+constexpr int COMPRESSED_STREAM_SCALE = 3;
 
 // Pre-calculated single pulse waveform (8 cycles of 4 samples/cycle at 40kHz
 // center frequency / 160kHz sample rate)
@@ -38,7 +51,8 @@ constexpr uint8_t BARKER13_PULSE_WAVE[BARKER13_PULSE_LEN] = {
 // Timing & Timeouts
 constexpr uint32_t RX_POLL_DELAY_US = 50;
 constexpr uint32_t TX_RESPONSE_TIMEOUT_MS = 100;
-constexpr uint32_t TX_PERIOD_MS = 15;
+constexpr uint32_t TX_PERIOD_MS = 14;
+constexpr int SERVO_STEP_DEG = 5;
 constexpr uint32_t TX_IDLE_DELAY_MS = 20;
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_LIMIT =
     20; // 20 iterations of 500ms = 10 seconds
