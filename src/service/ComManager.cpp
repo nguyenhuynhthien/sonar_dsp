@@ -99,7 +99,7 @@ bool ComManager::isStreaming() {
     return _isStreaming;
 }
 
-void ComManager::sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle) {
+void ComManager::sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle, uint8_t receiverId) {
     if (!_isStreaming || size != Constant::ADC_SAMPLES) {
         return;
     }
@@ -111,6 +111,7 @@ void ComManager::sendFrame(uint16_t frameId, const int16_t* samples, size_t size
         uint16_t frameId;
         uint8_t chunkIdx;
         uint16_t angle;
+        uint8_t receiverId;
     };
 
     for (size_t i = 0; i < CHUNKS_PER_FRAME; ++i) {
@@ -118,6 +119,7 @@ void ComManager::sendFrame(uint16_t frameId, const int16_t* samples, size_t size
         header.frameId = frameId;
         header.chunkIdx = (uint8_t)i;
         header.angle = angle;
+        header.receiverId = receiverId;
 
         _udp.beginPacket(_remoteIp, _remotePort);
         _udp.write((const uint8_t*)&header, sizeof(header));
@@ -141,12 +143,12 @@ void ComManager::sendAngle(uint16_t angle) {
     _udp.endPacket();
 }
 
-void ComManager::sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude, int32_t velocityBin) {
+void ComManager::sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude, int32_t velocityBin, uint8_t receiverId) {
     if (_remotePort == 0) {
         return;
     }
     char buf[64];
-    int len = snprintf(buf, sizeof(buf), "target:%d,%d,%d,%d", rangeBin, angle, amplitude, velocityBin);
+    int len = snprintf(buf, sizeof(buf), "target:%d,%d,%d,%d,%d", rangeBin, angle, amplitude, velocityBin, receiverId);
     
     _udp.beginPacket(_remoteIp, _remotePort);
     _udp.write((const uint8_t*)buf, len);

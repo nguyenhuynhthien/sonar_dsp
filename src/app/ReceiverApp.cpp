@@ -1,6 +1,5 @@
 #include "ReceiverApp.hpp"
 #include "../service/ComManager.h"
-#include "../service/AdcService.h"
 #include "../service/DacService.h"
 #include "../service/SyncSignalService.h"
 #include <math.h>
@@ -21,8 +20,8 @@ static esp_err_t dsps_conv_q15(const int16_t *Signal, const int siglen, const in
     return ESP_OK;
 }
 
-ReceiverApp::ReceiverApp(SharedSonarData &sharedData)
-    : _sharedData(sharedData), _pingCounter(0) {}
+ReceiverApp::ReceiverApp(SharedSonarData &sharedData, uint16_t* adcBuffer, int receiverIndex)
+    : _sharedData(sharedData), _adcBuffer(adcBuffer), _receiverIndex(receiverIndex), _pingCounter(0) {}
 
 void ReceiverApp::begin() {
   size_t convSize = Constant::ADC_SAMPLES + Constant::BARKER13_PULSE_LEN;
@@ -194,7 +193,7 @@ void ReceiverApp::run() {
   // Capture the raw samples under lock
   static uint16_t localRawSamples[Constant::ADC_SAMPLES];
   taskENTER_CRITICAL(&_sharedData.spinlock);
-  memcpy(localRawSamples, (const void *)_sharedData.adcBuffer,
+  memcpy(localRawSamples, (const void *)_adcBuffer,
          sizeof(localRawSamples));
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 
@@ -278,7 +277,7 @@ void ReceiverApp::run() {
     // Not enough pulses accumulated yet (using 8 pulses to save RAM/Time)
     taskENTER_CRITICAL(&_sharedData.spinlock);
     _sharedData.pulseIndex = _accumulatedCount;
-    _sharedData.processingDone = true;
+    _sharedData.processingDone |= (1 << _receiverIndex);
     taskEXIT_CRITICAL(&_sharedData.spinlock);
     return;
   }
@@ -331,22 +330,6 @@ void ReceiverApp::run() {
     cleanRawMag = (int32_t)sqrtf((float)maxFftMag);
   }
 
-  // Update target details
-  if (targetDetected && _peakIdxStored != -1) {
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    _sharedData.targetDetected = true;
-    _sharedData.targetRange = _peakIdxStored; // Range bin index
-    _sharedData.targetStrength = cleanRawMag;
-    _sharedData.peakIndexForVelocity = velocity_bin; // Doppler bin index
-    _sharedData.velocityRequested = true;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
-  } else {
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    _sharedData.targetDetected = false;
-    _sharedData.velocityRequested = false;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
-  }
-
   // Copy streaming values to localBuffer
   uint8_t mode = 0;
   taskENTER_CRITICAL(&_sharedData.spinlock);
@@ -370,38 +353,37 @@ void ReceiverApp::run() {
     }
   }
 
-  // Copy localBuffer to old _sharedData.adcBuffer for general tracking
-  memcpy((void*)_sharedData.adcBuffer, localBuffer, sizeof(localBuffer));
+  // Copy localBuffer to old adcBuffer for general tracking
+  memcpy((void*)_adcBuffer, localBuffer, sizeof(localBuffer));
   
+  uint16_t currentAngle = 0;
   taskENTER_CRITICAL(&_sharedData.spinlock);
-  bool targetDetectedFinal = _sharedData.targetDetected;
-  int32_t targetRangeFinal = _sharedData.targetRange;
-  int32_t targetStrengthFinal = _sharedData.targetStrength;
-  int32_t peakIndexFinal = _sharedData.peakIndexForVelocity;
-  uint16_t currentAngle = _sharedData.servoAngle;
-  
-  _sharedData.velocityRequested = false;
-  _sharedData.accumulatedDataReady = true;
-  _sharedData.requestServoStep = true;
+  currentAngle = _sharedData.servoAngle;
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 
   // Directly perform calculations and UDP sending on Core 1
   if (_com != nullptr) {
     // Send target details
-    if (targetDetectedFinal) {
-      _com->sendTarget(targetRangeFinal, currentAngle, targetStrengthFinal, peakIndexFinal);
+    if (targetDetected && _peakIdxStored != -1) {
+      _com->sendTarget(_peakIdxStored, currentAngle, cleanRawMag, velocity_bin, _receiverIndex);
     }
     
     // Send frame
-    _com->sendFrame(_waveFrameId++, localBuffer, Constant::ADC_SAMPLES, currentAngle);
+    _com->sendFrame(_waveFrameId++, localBuffer, Constant::ADC_SAMPLES, currentAngle, _receiverIndex);
   }
 
   // Reset accumulation for the next cycle
   _accumulatedCount = 0;
   _peakIdxStored = -1;
+
   taskENTER_CRITICAL(&_sharedData.spinlock);
-  _sharedData.pulseIndex = 0;
-  _sharedData.processingDone = true; // Signal transmitter that we are done with everything
+  _sharedData.processingDone |= (1 << _receiverIndex);
+  bool bothDone = (_sharedData.processingDone == 3);
+  if (bothDone) {
+    _sharedData.pulseIndex = 0;
+    _sharedData.accumulatedDataReady = true;
+    _sharedData.requestServoStep = true;
+  }
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 }
 

@@ -10,60 +10,62 @@ static inline uint32_t get_ccount() {
 }
 
 void SyncSignalService::init() {
-    AdcSignal::init();
 }
 
-void SyncSignalService::sampleAndPlay(uint16_t* adcDestBuffer, size_t size, 
+void SyncSignalService::sampleAndPlay(uint16_t* adcDestBuffer1, uint16_t* adcDestBuffer2, size_t size, 
                                      const uint8_t* dac1SrcBuffer, const uint8_t* dac2SrcBuffer, 
-                                     DacService& dac1, DacService& dac2) {
+                                     DacService& dac1, DacService& dac2,
+                                     AdcSignal& adc1, AdcSignal& adc2) {
     uint32_t cpu_freq_mhz = ESP.getCpuFreqMHz();
-    // Cycles per sample = CPU frequency * cycle factor
     uint32_t cycles_per_sample = (uint32_t)(cpu_freq_mhz * Constant::CPU_CYCLES_PER_SAMPLE_FACTOR);
 
-    // Read start cycle count first to set the absolute reference
     uint32_t start_cycles = get_ccount();
 
-    // Start the first conversion for i = 0
-    AdcSignal::startConversion();
+    // Start conversion on Channel 4 first
+    adc1.startConversion();
 
-    bool stuck = false;
-    
     for (size_t i = 0; i < size; ++i) {
         uint32_t target_cycles = start_cycles + i * cycles_per_sample;
         while ((int32_t)(get_ccount() - target_cycles) < 0) {
-            // Spin until timing is reached (overflow-safe)
+            // Spin until timing is reached
         }
         
-        // 1. Read result of the conversion that was triggered in the previous step
-        uint16_t val = AdcSignal::readResult();
+        // 1. Read result of Channel 4 conversion
+        uint16_t val1 = adc1.readResult();
         
-        // 2. Trigger the next conversion immediately so it runs in parallel with the rest of the loop
-        if (i < size - 1) {
-            AdcSignal::startConversion();
-        }
-
-        // 3. Write to DAC1 if source buffer is provided
+        // 2. Start conversion on Channel 5 immediately
+        adc2.startConversion();
+        
+        // 3. Write to DAC1 and DAC2 while Channel 5 is converting
         if (dac1SrcBuffer != nullptr) {
             dac1.writeSample(dac1SrcBuffer[i]);
         }
-
-        // 4. Write to DAC2 if source buffer is provided
         if (dac2SrcBuffer != nullptr) {
             dac2.writeSample(dac2SrcBuffer[i]);
         }
-
-        if (val == 0xFFFF) {
-            stuck = true;
-            // Pad the remaining samples with 0 to avoid garbage data
-            for (size_t j = i; j < size; ++j) {
-                adcDestBuffer[j] = 0;
-            }
-            break;
-        }
         
-        // Digital calibration: Scale to align baseline to 1.65V
-        uint32_t calibrated = (uint32_t)(val * Constant::SAMPLING_CALIBRATION_FACTOR);
-        if (calibrated > Constant::ADC_RESOLUTION_MAX) calibrated = Constant::ADC_RESOLUTION_MAX;
-        adcDestBuffer[i] = (uint16_t)calibrated;
+        // 4. Read result of Channel 5 conversion
+        uint16_t val2 = adc2.readResult();
+        
+        // 5. Start conversion on Channel 4 for the next loop iteration (if not at the end)
+        if (i < size - 1) {
+            adc1.startConversion();
+        }
+
+        // Calibrate and store channel 1 (val1)
+        if (val1 == 0xFFFF) {
+            val1 = 0;
+        }
+        uint32_t calibrated1 = (uint32_t)(val1 * Constant::SAMPLING_CALIBRATION_FACTOR);
+        if (calibrated1 > Constant::ADC_RESOLUTION_MAX) calibrated1 = Constant::ADC_RESOLUTION_MAX;
+        adcDestBuffer1[i] = (uint16_t)calibrated1;
+
+        // Calibrate and store channel 2 (val2)
+        if (val2 == 0xFFFF) {
+            val2 = 0;
+        }
+        uint32_t calibrated2 = (uint32_t)(val2 * Constant::SAMPLING_CALIBRATION_FACTOR);
+        if (calibrated2 > Constant::ADC_RESOLUTION_MAX) calibrated2 = Constant::ADC_RESOLUTION_MAX;
+        adcDestBuffer2[i] = (uint16_t)calibrated2;
     }
 }

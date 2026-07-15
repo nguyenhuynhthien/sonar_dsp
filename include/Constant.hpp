@@ -7,6 +7,8 @@ namespace Constant {
 // Sonar & DSP parameters
 constexpr size_t ADC_SAMPLES = 2048;
 constexpr size_t FILTER_COEFFS_LEN = 32;
+constexpr int ADC_CHANNEL_RX1 = 4;       // ADC1 Channel 4 (GPIO 32)
+constexpr int ADC_CHANNEL_RX2 = 5;       // ADC1 Channel 5 (GPIO 33)
 constexpr double CENTER_FREQ = 40000.0;  // 40 kHz
 constexpr double SAMPLE_RATE = 160000.0; // 160 kHz
 constexpr uint16_t ADC_RESOLUTION_MAX = 4095;
@@ -52,7 +54,7 @@ constexpr uint8_t BARKER13_PULSE_WAVE[BARKER13_PULSE_LEN] = {
 constexpr uint32_t RX_POLL_DELAY_US = 50;
 constexpr uint32_t TX_RESPONSE_TIMEOUT_MS = 100;
 constexpr uint32_t TX_PERIOD_MS = 14;
-constexpr int SERVO_STEP_DEG = 5;
+constexpr int SERVO_STEP_DEG = 7;
 constexpr uint32_t TX_IDLE_DELAY_MS = 20;
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_LIMIT =
     20; // 20 iterations of 500ms = 10 seconds

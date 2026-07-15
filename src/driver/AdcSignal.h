@@ -3,12 +3,18 @@
 
 #include <Arduino.h>
 
+#include <driver/adc.h>
+
 class AdcSignal {
 public:
-    static void init();
-    static uint16_t readRaw();
-    static void startConversion();
-    static uint16_t readResult();
+    AdcSignal(adc1_channel_t channel);
+    void init();
+    uint16_t readRaw();
+    void startConversion();
+    uint16_t readResult();
+
+private:
+    adc1_channel_t _channel;
 };
 
 #endif // ADC_SIGNAL_H

@@ -25,9 +25,9 @@ public:
     void begin();
     void update();
     bool isStreaming();
-    void sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle);
+    void sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle, uint8_t receiverId);
     void sendAngle(uint16_t angle);
-    void sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude, int32_t velocityBin);
+    void sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude, int32_t velocityBin, uint8_t receiverId);
     PulseType getPulseType() const { return _pulseType; }
     bool isServoEnabled() const { return _isServoEnabled; }
     StreamMode getStreamMode() const { return _streamMode; }

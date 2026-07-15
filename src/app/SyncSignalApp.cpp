@@ -2,14 +2,16 @@
 #include "../service/SyncSignalService.h"
 #include <Constant.hpp>
 
-SyncSignalApp::SyncSignalApp(SharedSonarData& sharedData, DacService& dac1, DacService& dac2, SimulatorApp& simulator)
-    : _sharedData(sharedData), _dac1(dac1), _dac2(dac2), _simulator(simulator) {
+SyncSignalApp::SyncSignalApp(SharedSonarData& sharedData, DacService& dac1, DacService& dac2, SimulatorApp& simulator, AdcSignal& adc1, AdcSignal& adc2)
+    : _sharedData(sharedData), _dac1(dac1), _dac2(dac2), _simulator(simulator), _adc1(adc1), _adc2(adc2) {
 }
 
 void SyncSignalApp::begin() {
     SyncSignalService::init();
     _dac1.init();
     _dac2.init();
+    _adc1.init();
+    _adc2.init();
 }
 
 void SyncSignalApp::run() {
@@ -40,5 +42,5 @@ void SyncSignalApp::run() {
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 
     // 5. Trigger hardware synchronization loop
-    SyncSignalService::sampleAndPlay((uint16_t*)_sharedData.adcBuffer, Constant::ADC_SAMPLES, dac1Buffer, dac2Buffer, _dac1, _dac2);
+    SyncSignalService::sampleAndPlay((uint16_t*)_sharedData.adcBuffer1, (uint16_t*)_sharedData.adcBuffer2, Constant::ADC_SAMPLES, dac1Buffer, dac2Buffer, _dac1, _dac2, _adc1, _adc2);
 }

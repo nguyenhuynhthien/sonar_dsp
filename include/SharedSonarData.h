@@ -8,9 +8,10 @@
 
 struct SharedSonarData {
     volatile bool triggerTx;
-    volatile bool processingDone;
+    volatile uint8_t processingDone;
     volatile bool adcReady;
-    uint16_t adcBuffer[Constant::ADC_SAMPLES];
+    uint16_t adcBuffer1[Constant::ADC_SAMPLES];
+    uint16_t adcBuffer2[Constant::ADC_SAMPLES];
     portMUX_TYPE spinlock;
     TaskHandle_t rxTaskHandle;
     TaskHandle_t servoTaskHandle;

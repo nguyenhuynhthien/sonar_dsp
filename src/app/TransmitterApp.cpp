@@ -55,7 +55,7 @@ void TransmitterApp::run() {
         // 1. Trigger Receiver on Core 1
         taskENTER_CRITICAL(&_sharedData.spinlock);
         _sharedData.triggerTx = true;
-        _sharedData.processingDone = false;
+        _sharedData.processingDone = 0;
         _sharedData.adcReady = false;
         _sharedData.streamMode = (uint8_t)_com.getStreamMode();
         taskEXIT_CRITICAL(&_sharedData.spinlock);
@@ -67,7 +67,7 @@ void TransmitterApp::run() {
         // 2. Wait for Core 1 (ReceiverApp) to finish sampling & DSP & UDP sending
         uint32_t timeoutTicks = pdMS_TO_TICKS(Constant::TX_RESPONSE_TIMEOUT_MS);
         uint32_t elapsedTicks = 0;
-        while (!_sharedData.processingDone && elapsedTicks < timeoutTicks) {
+        while (_sharedData.processingDone != 3 && elapsedTicks < timeoutTicks) {
             vTaskDelay(1);
             elapsedTicks++;
         }
@@ -80,7 +80,7 @@ void TransmitterApp::run() {
 
         // Clear processingDone for the next cycle
         taskENTER_CRITICAL(&_sharedData.spinlock);
-        _sharedData.processingDone = false;
+        _sharedData.processingDone = 0;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
 
         // Maintain configured rate/period (PRI)

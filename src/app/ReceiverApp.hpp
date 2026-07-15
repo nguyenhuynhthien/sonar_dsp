@@ -7,7 +7,7 @@ class ComManager;
 
 class ReceiverApp {
 public:
-    ReceiverApp(SharedSonarData& sharedData);
+    ReceiverApp(SharedSonarData& sharedData, uint16_t* adcBuffer, int receiverIndex = 0);
     void begin();
     void run();
     int32_t calculateVelocity(int peakIndex);
@@ -15,6 +15,8 @@ public:
 
 private:
     SharedSonarData& _sharedData;
+    uint16_t* _adcBuffer;
+    int _receiverIndex;
     
     // DSP buffers (dynamically allocated if needed)
     int16_t* _demodI = nullptr;

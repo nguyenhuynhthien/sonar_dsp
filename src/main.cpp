@@ -13,7 +13,7 @@ SharedSonarData sharedData = {
     .triggerTx = false,
     .processingDone = false,
     .adcReady = false,
-    .adcBuffer = {0},
+    .adcBuffer1 = {0},
     .spinlock = portMUX_INITIALIZER_UNLOCKED,
     .rxTaskHandle = nullptr,
     .servoTaskHandle = nullptr,
@@ -47,13 +47,17 @@ const char *hostName = "esp32";
 DacService dac1(DAC_CHANNEL_1);
 DacService dac2(DAC_CHANNEL_2);
 
+AdcSignal adc1(ADC1_CHANNEL_4);
+AdcSignal adc2(ADC1_CHANNEL_5);
+
 ComManager com(ssid, password, hostName);
 ServoService servoService;
 ScannerApp scannerApp(servoService, sharedData);
-ReceiverApp rxApp(sharedData);
+ReceiverApp rxApp1(sharedData, sharedData.adcBuffer1, 0);
+ReceiverApp rxApp2(sharedData, sharedData.adcBuffer2, 1);
 TransmitterApp txApp(com, sharedData);
 SimulatorApp simulatorApp(sharedData);
-SyncSignalApp syncApp(sharedData, dac1, dac2, simulatorApp);
+SyncSignalApp syncApp(sharedData, dac1, dac2, simulatorApp, adc1, adc2);
 
 void setup() {
   Serial.begin(Constant::SERIAL_BAUD_RATE);
@@ -63,8 +67,10 @@ void setup() {
   // Initialize drivers & local applications (networking is offloaded to Core 0)
   scannerApp.begin();
   txApp.begin();
-  rxApp.begin();
-  rxApp.setComManager(com); // Set ComManager reference on rxApp for Core 1 sending
+  rxApp1.begin();
+  rxApp1.setComManager(com); // Set ComManager reference on rxApp1 for Core 1 sending
+  rxApp2.begin();
+  rxApp2.setComManager(com);
   simulatorApp.begin();
   syncApp.begin();
 
@@ -133,7 +139,8 @@ void setup() {
           // 1. SyncSignalApp waits for trigger, prepares buffers, runs ADC/DAC sync loop
           syncApp.run();
           // 2. Once syncApp completes sampling, ReceiverApp processes DSP pipeline and sends UDP
-          rxApp.run();
+          rxApp1.run();
+          rxApp2.run();
         }
       },
       "RxTask", 4096, nullptr, Constant::TASK_PRIORITY,
