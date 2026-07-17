@@ -44,6 +44,23 @@ struct SharedSonarData {
     volatile int peakIndexForVelocity;
     volatile bool velocityRequested;
     volatile int pulseIndex;
+    volatile uint32_t txPeriodMs;
+
+    // Channel Matrices for Left (L) and Right (R) complex signals (Q15: real and imag)
+    // Dimension: [8][2048] - Heap allocated to save static DRAM
+    int16_t* channelL_I[8];
+    int16_t* channelL_Q[8];
+    int16_t* channelR_I[8];
+    int16_t* channelR_Q[8];
+
+    // Shared temporary buffers to avoid redundant heap allocations in ReceiverApps
+    int16_t* sharedDemodI;
+    int16_t* sharedDemodQ;
+
+    // Shared variables for Sum-channel Peak detection and FFT
+    int sharedPeakIdx;
+    int16_t sharedFftReal[Constant::DOPPLER_FFT_LEN];
+    int16_t sharedFftImag[Constant::DOPPLER_FFT_LEN];
 };
 
 #endif // SHARED_SONAR_DATA_H

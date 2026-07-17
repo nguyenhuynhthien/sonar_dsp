@@ -5,7 +5,7 @@
 
 namespace Constant {
 // Sonar & DSP parameters
-constexpr size_t ADC_SAMPLES = 2048;
+constexpr size_t ADC_SAMPLES = 1024;
 constexpr size_t FILTER_COEFFS_LEN = 32;
 constexpr int ADC_CHANNEL_RX1 = 4;       // ADC1 Channel 4 (GPIO 32)
 constexpr int ADC_CHANNEL_RX2 = 5;       // ADC1 Channel 5 (GPIO 33)
@@ -52,21 +52,20 @@ constexpr uint8_t BARKER13_PULSE_WAVE[BARKER13_PULSE_LEN] = {
 
 // Timing & Timeouts
 constexpr uint32_t RX_POLL_DELAY_US = 50;
-constexpr uint32_t TX_RESPONSE_TIMEOUT_MS = 100;
-constexpr uint32_t TX_PERIOD_MS = 14;
+constexpr uint32_t TX_RESPONSE_TIMEOUT_MS = 35;
 constexpr int SERVO_STEP_DEG = 7;
 constexpr uint32_t TX_IDLE_DELAY_MS = 20;
 constexpr uint32_t WIFI_CONNECT_TIMEOUT_LIMIT =
     20; // 20 iterations of 500ms = 10 seconds
 constexpr uint32_t WIFI_CONNECT_DELAY_MS = 500;
 constexpr uint32_t WIFI_ARP_DELAY_MS = 300;
-constexpr uint32_t UDP_PACE_DELAY_US = 1500;
+constexpr uint32_t UDP_PACE_DELAY_US = 600;
 
 // Network
 constexpr uint16_t DEFAULT_PORT = 8080;
 constexpr size_t UDP_BUFFER_SIZE = 32;
 constexpr size_t CHUNK_SAMPLES = 512;
-constexpr size_t CHUNKS_PER_FRAME = 4;
+constexpr size_t CHUNKS_PER_FRAME = 2;
 
 // Tasks & System
 constexpr uint32_t SERIAL_BAUD_RATE = 115200;

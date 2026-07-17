@@ -3,6 +3,7 @@
 #include "app/ScannerApp.h"
 #include "app/TransmitterApp.h"
 #include "app/SyncSignalApp.h"
+#include "app/CombineReceiverApp.h"
 #include "service/ComManager.h"
 #include "service/ServoService.h"
 #include <Arduino.h>
@@ -36,7 +37,14 @@ SharedSonarData sharedData = {
     .waveSendReady = false,
     .peakIndexForVelocity = -1,
     .velocityRequested = false,
-    .pulseIndex = 0
+    .pulseIndex = 0,
+    .txPeriodMs = 12,
+    .channelL_I = {nullptr},
+    .channelL_Q = {nullptr},
+    .channelR_I = {nullptr},
+    .channelR_Q = {nullptr},
+    .sharedDemodI = nullptr,
+    .sharedDemodQ = nullptr
 };
 
 // WiFi SSID, password and MDNS hostname
@@ -58,11 +66,35 @@ ReceiverApp rxApp2(sharedData, sharedData.adcBuffer2, 1);
 TransmitterApp txApp(com, sharedData);
 SimulatorApp simulatorApp(sharedData);
 SyncSignalApp syncApp(sharedData, dac1, dac2, simulatorApp, adc1, adc2);
+CombineReceiverApp combineRxApp(sharedData);
 
 void setup() {
   Serial.begin(Constant::SERIAL_BAUD_RATE);
   delay(Constant::SETUP_DELAY_MS);
   Serial.println("System starting up...");
+  Serial.printf("Free heap at startup: %d bytes\n", ESP.getFreeHeap());
+
+  // Initialize WiFi/UDP first so that the network driver gets priority on heap allocations
+  com.begin();
+  Serial.printf("Free heap after WiFi init: %d bytes\n", ESP.getFreeHeap());
+
+  // Dynamically allocate shared matrices and buffers on the heap to prevent DRAM overflow
+  bool allocSuccess = true;
+  for (int i = 0; i < 8; ++i) {
+    sharedData.channelL_I[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+    sharedData.channelL_Q[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+    sharedData.channelR_I[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+    sharedData.channelR_Q[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+    if (!sharedData.channelL_I[i] || !sharedData.channelL_Q[i] || !sharedData.channelR_I[i] || !sharedData.channelR_Q[i]) {
+      allocSuccess = false;
+    }
+  }
+  sharedData.sharedDemodI = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+  sharedData.sharedDemodQ = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+  if (!sharedData.sharedDemodI || !sharedData.sharedDemodQ) {
+    allocSuccess = false;
+  }
+  Serial.printf("Free heap after matrix allocation: %d bytes (Allocation success: %s)\n", ESP.getFreeHeap(), allocSuccess ? "YES" : "NO");
 
   // Initialize drivers & local applications (networking is offloaded to Core 0)
   scannerApp.begin();
@@ -73,14 +105,15 @@ void setup() {
   rxApp2.setComManager(com);
   simulatorApp.begin();
   syncApp.begin();
+  combineRxApp.begin();
+  combineRxApp.setComManager(com);
 
   Serial.println("Drivers and Services initialized.");
 
   // Pin Task0 to Core 0: High-priority hardware Pulse Generation and UDP command polling
-  xTaskCreatePinnedToCore(
+  BaseType_t t1 = xTaskCreatePinnedToCore(
       [](void *param) {
         Serial.println("Transmitter Task (Core 0) started.");
-        com.begin(); // Initialize UDP socket and WiFi on Core 0 for thread safety
         while (true) {
           txApp.run();
         }
@@ -89,9 +122,10 @@ void setup() {
       nullptr,
       0 // Pinned to Core 0
   );
+  Serial.printf("TxTask creation: %s\n", (t1 == pdPASS) ? "SUCCESS" : "FAILED");
 
   // Pin Scanner Task to Core 0 (Priority 5, lower than TxTask and RxTask)
-  xTaskCreatePinnedToCore(
+  BaseType_t t2 = xTaskCreatePinnedToCore(
       [](void *param) {
         Serial.println("Scanner Task (Core 0) started.");
         while (true) {
@@ -130,9 +164,10 @@ void setup() {
       &sharedData.servoTaskHandle,
       0 // Pinned to Core 0
   );
+  Serial.printf("ScannerTask creation: %s\n", (t2 == pdPASS) ? "SUCCESS" : "FAILED");
 
   // Pin Task1 to Core 1: Critical real-time DSP pipelines, sampling, and UDP transmission
-  xTaskCreatePinnedToCore(
+  BaseType_t t3 = xTaskCreatePinnedToCore(
       [](void *param) {
         Serial.println("Sync and DSP Task (Core 1) started.");
         while (true) {
@@ -141,12 +176,14 @@ void setup() {
           // 2. Once syncApp completes sampling, ReceiverApp processes DSP pipeline and sends UDP
           rxApp1.run();
           rxApp2.run();
+          combineRxApp.run();
         }
       },
       "RxTask", 4096, nullptr, Constant::TASK_PRIORITY,
       &sharedData.rxTaskHandle,
       1 // Pinned to Core 1
   );
+  Serial.printf("RxTask creation: %s\n", (t3 == pdPASS) ? "SUCCESS" : "FAILED");
 }
 
 void loop() {

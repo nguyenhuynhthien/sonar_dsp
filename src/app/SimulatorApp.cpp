@@ -63,9 +63,9 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     };
 
     Target targets[3] = {
-        { 45.0f,  400, 0.8f, 10.0f },
-        { 90.0f,  850, 0.5f, 10.0f },
-        { 135.0f, 1300, 0.5f, 10.0f }
+        { 45.0f,  400, 0.9f, 10.0f },
+        { 90.0f,  850, 0.7f, 10.0f },
+        { 135.0f, 700, 0.7f, 10.0f }
     };
 
     // Find if the current angle is within any target's beamwidth
@@ -90,19 +90,17 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     if (activeIndex != -1) {
         float fd = 0.0f;
         if (activeIndex == 0) {
-            fd = 23.32f;  // v = 0.10 m/s (Detectable at 15ms PRI)
+            fd = -20.83f;  // Bin -4 -> v = +0.09 m/s
         } else if (activeIndex == 1) {
-            fd = -16.32f; // v = -0.07 m/s
+            fd = 10.42f;   // Bin +2 -> v = -0.045 m/s
         } else if (activeIndex == 2) {
-            fd = 9.33f;   // v = 0.04 m/s
+            fd = -10.42f;  // Bin -2 -> v = +0.045 m/s
         }
         
         int p = 0;
         taskENTER_CRITICAL(&_sharedData.spinlock);
         p = _sharedData.pulseIndex;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
-        
-        float theta = 2.0f * M_PI * fd * p * ((float)Constant::TX_PERIOD_MS / 1000.0f);
         
         for (size_t i = 0; i < size; ++i) {
             // Generate a shared random noise component for consistency
@@ -111,34 +109,17 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
             if (activeIndex != -1 && i >= simDelay && i < simDelay + actualPulseLen) {
                 size_t pulseIdx = i - simDelay;
                 
-                float carrier = 0.0f;
-                float sign = 1.0f;
-                if (actualPulseLen == Constant::BARKER13_PULSE_LEN) {
-                    static const float chips[13] = {1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, -1, 1};
-                    int chipIdx = pulseIdx / 8;
-                    if (chipIdx >= 0 && chipIdx < 13) {
-                        sign = chips[chipIdx];
-                    }
-                }
-                
-                // Generate 40kHz signal sampled at 160kHz
-                // Use cosine for consistency with Real/Imag demodulation
-                // The receiver samples at 0, 90, 180, 270 relative to the 40kHz reference.
-                // We must use fc + fd to simulate the real physics of a moving target.
-                float fc = (float)Constant::CENTER_FREQ;
                 float fs = (float)Constant::SAMPLE_RATE;
-                float PRI = (float)Constant::TX_PERIOD_MS / 1000.0f;
+                float PRI = (float)_sharedData.txPeriodMs / 1000.0f;
                 
-                // Signal: cos(2*pi*(fc + fd)*t + 2*pi*fc*deltaT_p)
-                // where deltaT_p is the time delay change between pings.
-                // However, the simplest correct simulation is:
-                // Phase(p, i) = 2*pi*fc*(i/fs) + 2*pi*fd*(i/fs + p*PRI)
+                // Absolute time: t = time within the ADC buffer
                 float t = (float)i / fs;
-                float totalPhase = 2.0f * M_PI * (fc * t + fd * ((float)p * PRI)) + (M_PI / 6.0f);
-                carrier = sign * cosf(totalPhase);
+                float dopplerPhase = 2.0f * M_PI * fd * (t + (float)p * PRI) + (M_PI / 6.0f);
                 
-                // Scale deviation with the beam scale
-                float distortedDeviation = carrier * 127.0f * activeBeamScale;
+                // Single Sideband (SSB) modulation of the exact transmitted pulse waveform
+                float baseDev = (float)localPulse[pulseIdx] - (float)Constant::DAC_DC_BIAS;
+                float baseDevPrev = (pulseIdx > 0) ? ((float)localPulse[pulseIdx - 1] - (float)Constant::DAC_DC_BIAS) : 0.0f;
+                float distortedDeviation = (baseDev * cosf(dopplerPhase) - baseDevPrev * sinf(dopplerPhase)) * activeBeamScale;
 
                 int simVal = (int)Constant::DAC_DC_BIAS + (int)distortedDeviation + noise;
 
