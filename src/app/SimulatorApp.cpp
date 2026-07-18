@@ -29,6 +29,14 @@ uint32_t SimulatorApp::getDelaySamples() const {
     return _sharedData.simDelaySamples;
 }
 
+// Gaussian noise generator using Box-Muller transform (sigma = 7.0)
+static int generateGaussianNoise(float sigma) {
+    float u1 = ((float)esp_random() + 1.0f) / 4294967297.0f; // range (0, 1)
+    float u2 = (float)esp_random() / 4294967295.0f; // range [0, 1]
+    float z = sqrtf(-2.0f * logf(u1)) * cosf(2.0f * M_PI * u2);
+    return (int)roundf(z * sigma);
+}
+
 void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8_t* txBuffer, size_t txPulseLen) {
     if (!_sharedData.simEnabled) {
         // If simulator is disabled, fill completely with pure bias level
@@ -104,7 +112,7 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
         
         for (size_t i = 0; i < size; ++i) {
             // Generate a shared random noise component for consistency
-            int noise = ((int)(esp_random() % 31)) - 15; // [-15, 15]
+            int noise = generateGaussianNoise(7.0f);
 
             if (activeIndex != -1 && i >= simDelay && i < simDelay + actualPulseLen) {
                 size_t pulseIdx = i - simDelay;
@@ -140,7 +148,7 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     } else {
         // No target active
         for (size_t i = 0; i < size; ++i) {
-            int noise = ((int)(esp_random() % 31)) - 15;
+            int noise = generateGaussianNoise(7.0f);
             int simVal = (int)Constant::DAC_DC_BIAS + noise;
             if (simVal > 255) simVal = 255;
             if (simVal < 0) simVal = 0;
