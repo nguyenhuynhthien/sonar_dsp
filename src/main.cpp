@@ -26,25 +26,29 @@ SharedSonarData sharedData = {
     .simEnabled = true,     // Simulator enabled by default
     .servoAngle = 0,
     .angleUpdated = false,
+    .sweepDirectionCCW = true,
     .targetRange = 0,
     .targetStrength = 0,
     .targetDetected = false,
     .streamMode = 0,
     .accumulatedDataReady = false,
     .requestServoStep = false,
+    .stepComplete = false,
     .waveSendBuffer = {0},
     .waveSendAngle = 0,
     .waveSendReady = false,
     .peakIndexForVelocity = -1,
     .velocityRequested = false,
     .pulseIndex = 0,
-    .txPeriodMs = 12,
+    .txPeriodMs = 30,
     .channelL_I = {nullptr},
     .channelL_Q = {nullptr},
     .channelR_I = {nullptr},
     .channelR_Q = {nullptr},
     .sharedDemodI = nullptr,
-    .sharedDemodQ = nullptr
+    .sharedDemodQ = nullptr,
+    .sharedPeakIdx = 0,
+    .sharedWindowCenterIdx = 0
 };
 
 // WiFi SSID, password and MDNS hostname
@@ -81,10 +85,10 @@ void setup() {
   // Dynamically allocate shared matrices and buffers on the heap to prevent DRAM overflow
   bool allocSuccess = true;
   for (int i = 0; i < 8; ++i) {
-    sharedData.channelL_I[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
-    sharedData.channelL_Q[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
-    sharedData.channelR_I[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
-    sharedData.channelR_Q[i] = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
+    sharedData.channelL_I[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
+    sharedData.channelL_Q[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
+    sharedData.channelR_I[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
+    sharedData.channelR_Q[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
     if (!sharedData.channelL_I[i] || !sharedData.channelL_Q[i] || !sharedData.channelR_I[i] || !sharedData.channelR_Q[i]) {
       allocSuccess = false;
     }
@@ -166,6 +170,21 @@ void setup() {
   );
   Serial.printf("ScannerTask creation: %s\n", (t2 == pdPASS) ? "SUCCESS" : "FAILED");
 
+  // Create AsyncSendTask on Core 0 (Priority 4) to handle async UDP transmissions
+  xTaskCreatePinnedToCore(
+      [](void *param) {
+        Serial.println("Async Send Task (Core 0) started.");
+        while (true) {
+          com.processAsyncSends();
+          vTaskDelay(pdMS_TO_TICKS(5));
+        }
+      },
+      "AsyncSendTask", 4096, nullptr,
+      4, // Lower priority than ScannerTask (5)
+      nullptr,
+      0 // Pinned to Core 0
+  );
+
   // Pin Task1 to Core 1: Critical real-time DSP pipelines, sampling, and UDP transmission
   BaseType_t t3 = xTaskCreatePinnedToCore(
       [](void *param) {
@@ -173,7 +192,6 @@ void setup() {
         while (true) {
           // 1. SyncSignalApp waits for trigger, prepares buffers, runs ADC/DAC sync loop
           syncApp.run();
-          // 2. Once syncApp completes sampling, ReceiverApp processes DSP pipeline and sends UDP
           rxApp1.run();
           rxApp2.run();
           combineRxApp.run();
@@ -187,6 +205,5 @@ void setup() {
 }
 
 void loop() {
-  // Main loop does nothing as the work is executed asynchronously by Core 0/1 tasks.
   vTaskDelay(pdMS_TO_TICKS(Constant::LOOP_DELAY_MS));
 }

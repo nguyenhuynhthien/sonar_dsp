@@ -33,13 +33,17 @@ static uint32_t isqrt32(uint32_t n) {
     return res;
 }
 
+extern int16_t s_tempOutI[2][Constant::ADC_SAMPLES];
+extern int16_t s_tempOutQ[2][Constant::ADC_SAMPLES];
+
 void CombineReceiverApp::sendSumWaveformFrame(int c) {
+    // We use the full Pulse 0 matched filter buffers s_tempOutI/Q
     static int16_t sumBuffer[Constant::ADC_SAMPLES];
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-        int16_t lI = _sharedData.channelL_I[c][n];
-        int16_t lQ = _sharedData.channelL_Q[c][n];
-        int16_t rI = _sharedData.channelR_I[c][n];
-        int16_t rQ = _sharedData.channelR_Q[c][n];
+        int16_t lI = s_tempOutI[0][n];
+        int16_t lQ = s_tempOutQ[0][n];
+        int16_t rI = s_tempOutI[1][n];
+        int16_t rQ = s_tempOutQ[1][n];
         int32_t sqL = (int32_t)lI * lI + (int32_t)lQ * lQ;
         int32_t sqR = (int32_t)rI * rI + (int32_t)rQ * rQ;
         sumBuffer[n] = (int16_t)constrain(isqrt32((sqL + sqR) >> 4), 0, Constant::Q15_MAX);
@@ -47,12 +51,17 @@ void CombineReceiverApp::sendSumWaveformFrame(int c) {
 
     if (_com != nullptr) {
         uint16_t currentAngle = 0;
+        bool isCCW = true;
         taskENTER_CRITICAL(&_sharedData.spinlock);
         currentAngle = _sharedData.servoAngle;
+        isCCW = _sharedData.sweepDirectionCCW;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
 
+        uint16_t angleToSend = currentAngle;
+        if (!isCCW) angleToSend |= 0x8000;
+
         static uint16_t sumWaveFrameId = 0;
-        _com->sendFrame(sumWaveFrameId++, sumBuffer, Constant::ADC_SAMPLES, currentAngle, 0); // receiverId = 0 (Sum Channel)
+        _com->sendFrameAsync(sumWaveFrameId++, sumBuffer, Constant::ADC_SAMPLES, angleToSend, 0); // receiverId = 0 (Sum Channel)
     }
 }
 
@@ -63,22 +72,34 @@ void CombineReceiverApp::processTargetAndVelocity() {
     int32_t velocity_bin = 0;
     int32_t cleanRawMag = 0;
 
-    // Find peak range bin by accumulating Sum Channel energy on-the-fly in a local CPU stack variable
-    for (int r = Constant::TX_LEAKAGE_BLANK_SAMPLES; r < (int)Constant::ADC_SAMPLES; ++r) {
+    int center = 0;
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    center = _sharedData.sharedWindowCenterIdx;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+    int start = center - (Constant::FFT_WINDOW_SIZE / 2);
+    int bestK = -1;
+
+    // Find peak range bin by accumulating Sum Channel energy only within the 15-sample window
+    for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
         int32_t sumEnergy = 0;
         for (int p = 0; p < 8; ++p) {
-            int16_t lI = _sharedData.channelL_I[p][r];
-            int16_t lQ = _sharedData.channelL_Q[p][r];
-            int16_t rI = _sharedData.channelR_I[p][r];
-            int16_t rQ = _sharedData.channelR_Q[p][r];
+            int16_t lI = _sharedData.channelL_I[p][k];
+            int16_t lQ = _sharedData.channelL_Q[p][k];
+            int16_t rI = _sharedData.channelR_I[p][k];
+            int16_t rQ = _sharedData.channelR_Q[p][k];
             int32_t energyL = ((int32_t)lI * lI + (int32_t)lQ * lQ) >> 4;
             int32_t energyR = ((int32_t)rI * rI + (int32_t)rQ * rQ) >> 4;
             sumEnergy += energyL + energyR;
         }
         if (sumEnergy > maxAcc) {
             maxAcc = sumEnergy;
-            bestIdx = r;
+            bestK = k;
         }
+    }
+    
+    if (bestK != -1) {
+        bestIdx = start + bestK;
     }
     _sharedData.sharedPeakIdx = bestIdx;
 
@@ -100,16 +121,16 @@ void CombineReceiverApp::processTargetAndVelocity() {
         }
     }
 
-    if (targetDetected && bestIdx != -1) {
+    if (targetDetected && bestK != -1) {
         // Collect Sum Channel samples at the peak index for all 8 pulses
         for (int p = 0; p < 8; ++p) {
-            _sharedData.sharedFftReal[p] = (_sharedData.channelL_I[p][bestIdx] + _sharedData.channelR_I[p][bestIdx]) >> 1;
-            _sharedData.sharedFftImag[p] = (_sharedData.channelL_Q[p][bestIdx] + _sharedData.channelR_Q[p][bestIdx]) >> 1;
+            _sharedData.sharedFftReal[p] = (_sharedData.channelL_I[p][bestK] + _sharedData.channelR_I[p][bestK]) >> 1;
+            _sharedData.sharedFftImag[p] = (_sharedData.channelL_Q[p][bestK] + _sharedData.channelR_Q[p][bestK]) >> 1;
         }
 
         // Run 16-point FFT using esp-dsp (8 data points + 8 zero padding)
         // Complex float input/output: [Real, Imag, Real, Imag...] size = 16 * 2 = 32
-        static float fftBuffer[Constant::DOPPLER_FFT_LEN * 2];
+        static float fftBuffer[Constant::DOPPLER_FFT_LEN * 2] __attribute__((aligned(16)));
         for (int i = 0; i < 8; ++i) {
             fftBuffer[i * 2 + 0] = (float)_sharedData.sharedFftReal[i];
             fftBuffer[i * 2 + 1] = (float)_sharedData.sharedFftImag[i];
@@ -148,12 +169,16 @@ void CombineReceiverApp::processTargetAndVelocity() {
     // Send target details to SonarViewer
     if (_com != nullptr) {
         uint16_t currentAngle = 0;
+        bool isCCW = true;
         taskENTER_CRITICAL(&_sharedData.spinlock);
         currentAngle = _sharedData.servoAngle;
+        isCCW = _sharedData.sweepDirectionCCW;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
 
         if (targetDetected && bestIdx != -1) {
-            _com->sendTarget(bestIdx, currentAngle, cleanRawMag, velocity_bin, 0); // receiverId = 0 (Sum Channel)
+            uint16_t angleToSend = currentAngle;
+            if (!isCCW) angleToSend |= 0x8000;
+            _com->sendTarget(bestIdx, angleToSend, cleanRawMag, velocity_bin, 0); // receiverId = 0 (Sum Channel)
         }
     }
 }
@@ -176,19 +201,18 @@ void CombineReceiverApp::run() {
         // Prepare for the next pulse
         taskENTER_CRITICAL(&_sharedData.spinlock);
         _sharedData.pulseIndex = nextPulseIdx;
-        _sharedData.processingDone = 0;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     } else {
-        // 8th pulse processed. Send Sum Channel waveform (Rx0) and process target details.
-        sendSumWaveformFrame(7);
+        // 8th pulse processed. Send Sum Channel waveform (Rx0) using Pulse 0 and process target details.
+        sendSumWaveformFrame(0);
         processTargetAndVelocity();
 
         // Reset for the next batch of 8 pulses
         taskENTER_CRITICAL(&_sharedData.spinlock);
         _sharedData.pulseIndex = 0;
-        _sharedData.processingDone = 0;
         _sharedData.accumulatedDataReady = true;
         _sharedData.requestServoStep = true;
+        _sharedData.stepComplete = true;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     }
 }

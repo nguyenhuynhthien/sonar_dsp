@@ -5,8 +5,20 @@
 SimulatorApp::SimulatorApp(SharedSonarData& sharedData) : _sharedData(sharedData) {
 }
 
+static int16_t s_gaussianNoiseTable[256];
+static bool s_tableInitialized = false;
+
 void SimulatorApp::begin() {
     // Simulator initialization (pins, default state)
+    if (!s_tableInitialized) {
+        for (int i = 0; i < 256; ++i) {
+            float u1 = ((float)esp_random() + 1.0f) / 4294967297.0f; // range (0, 1)
+            float u2 = (float)esp_random() / 4294967295.0f; // range [0, 1]
+            float z = sqrtf(-2.0f * logf(u1)) * cosf(2.0f * M_PI * u2);
+            s_gaussianNoiseTable[i] = (int16_t)roundf(z * 7.0f);
+        }
+        s_tableInitialized = true;
+    }
 }
 
 void SimulatorApp::setEnabled(bool enabled) {
@@ -29,12 +41,9 @@ uint32_t SimulatorApp::getDelaySamples() const {
     return _sharedData.simDelaySamples;
 }
 
-// Gaussian noise generator using Box-Muller transform (sigma = 7.0)
+// Fast Gaussian noise generator using pre-calculated lookup table
 static int generateGaussianNoise(float sigma) {
-    float u1 = ((float)esp_random() + 1.0f) / 4294967297.0f; // range (0, 1)
-    float u2 = (float)esp_random() / 4294967295.0f; // range [0, 1]
-    float z = sqrtf(-2.0f * logf(u1)) * cosf(2.0f * M_PI * u2);
-    return (int)roundf(z * sigma);
+    return s_gaussianNoiseTable[esp_random() & 255];
 }
 
 void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8_t* txBuffer, size_t txPulseLen) {
@@ -71,9 +80,9 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     };
 
     Target targets[3] = {
-        { 45.0f,  400, 0.9f, 10.0f },
-        { 90.0f,  850, 0.7f, 10.0f },
-        { 135.0f, 700, 0.7f, 10.0f }
+        { 50.0f,  400, 0.9f, 4.0f },
+        { 90.0f,  850, 0.7f, 4.0f },
+        { 130.0f, 700, 0.7f, 4.0f }
     };
 
     // Find if the current angle is within any target's beamwidth
@@ -98,11 +107,11 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     if (activeIndex != -1) {
         float fd = 0.0f;
         if (activeIndex == 0) {
-            fd = -20.83f;  // Bin -4 -> v = +0.09 m/s
+            fd = -8.33f;  // Bin -4 -> v = +0.036 m/s
         } else if (activeIndex == 1) {
-            fd = 10.42f;   // Bin +2 -> v = -0.045 m/s
+            fd = 4.17f;   // Bin +2 -> v = -0.018 m/s
         } else if (activeIndex == 2) {
-            fd = -10.42f;  // Bin -2 -> v = +0.045 m/s
+            fd = -4.17f;  // Bin -2 -> v = +0.018 m/s
         }
         
         int p = 0;

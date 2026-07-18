@@ -23,6 +23,7 @@ void ScannerApp::step() {
 
   taskENTER_CRITICAL(&_sharedData.spinlock);
   _sharedData.servoAngle = _currentAngle;
+  _sharedData.sweepDirectionCCW = (_step > 0);
   _sharedData.angleUpdated = true;
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 }

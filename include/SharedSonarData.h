@@ -28,6 +28,7 @@ struct SharedSonarData {
     
     volatile uint16_t servoAngle;
     volatile bool angleUpdated;
+    volatile bool sweepDirectionCCW; // true = CCW (increasing), false = CW (decreasing)
 
     // Target information and streaming configuration
     volatile int32_t targetRange;
@@ -36,6 +37,7 @@ struct SharedSonarData {
     volatile uint8_t streamMode; // 0: raw, 1: demod, 2: compressed
     volatile bool accumulatedDataReady;
     volatile bool requestServoStep;
+    volatile bool stepComplete;
 
     // Waveform and velocity synchronization variables
     int16_t waveSendBuffer[Constant::ADC_SAMPLES];
@@ -59,6 +61,7 @@ struct SharedSonarData {
 
     // Shared variables for Sum-channel Peak detection and FFT
     int sharedPeakIdx;
+    volatile int sharedWindowCenterIdx;
     int16_t sharedFftReal[Constant::DOPPLER_FFT_LEN];
     int16_t sharedFftImag[Constant::DOPPLER_FFT_LEN];
 };

@@ -120,6 +120,9 @@ void ReceiverApp::performIQDemodulation(const int16_t *rawSamples) {
   }
 }
 
+int16_t s_tempOutI[2][Constant::ADC_SAMPLES];
+int16_t s_tempOutQ[2][Constant::ADC_SAMPLES];
+
 void ReceiverApp::performMatchedFiltering(int pulseIdx) {
   if (!_demodI || !_demodQ)
     return;
@@ -127,15 +130,14 @@ void ReceiverApp::performMatchedFiltering(int pulseIdx) {
   int16_t* outI = (_receiverIndex == 0) ? _sharedData.channelL_I[pulseIdx] : _sharedData.channelR_I[pulseIdx];
   int16_t* outQ = (_receiverIndex == 0) ? _sharedData.channelL_Q[pulseIdx] : _sharedData.channelR_Q[pulseIdx];
 
-  // Real-time matched filtering in a single optimized pass.
-  // Since coefficients represent carrier sines/cosines at 40kHz/160kHz,
-  // either coefI or coefQ is zero at any index. We skip zero multiplications to save 4x operations.
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    int32_t sumI = 0;
-    int32_t sumQ = 0;
+  if (pulseIdx == 0) {
+    // 1. Compute full matched filter for Pulse 0 into file-scope static buffer
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      int32_t sumI = 0;
+      int32_t sumQ = 0;
 
-    for (int k = 0; k < _filterLen; ++k) {
-      if (n >= k) {
+      int maxK = (n < _filterLen) ? (n + 1) : _filterLen;
+      for (int k = 0; k < maxK; ++k) {
         int16_t sigI = _demodI[n - k];
         int16_t sigQ = _demodQ[n - k];
         int16_t coefI = _hI[k];
@@ -150,10 +152,83 @@ void ReceiverApp::performMatchedFiltering(int pulseIdx) {
           sumQ += (int32_t)sigI * coefQ;
         }
       }
+
+      s_tempOutI[_receiverIndex][n] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
+      s_tempOutQ[_receiverIndex][n] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
     }
 
-    outI[n] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
-    outQ[n] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
+    // 2. Find peak index for Pulse 0 on this channel
+    int bestIdx = -1;
+    int32_t maxEnergy = 0;
+    for (int n = Constant::TX_LEAKAGE_BLANK_SAMPLES; n < (int)Constant::ADC_SAMPLES; ++n) {
+      int32_t energy = ((int32_t)s_tempOutI[_receiverIndex][n] * s_tempOutI[_receiverIndex][n] + 
+                        (int32_t)s_tempOutQ[_receiverIndex][n] * s_tempOutQ[_receiverIndex][n]) >> 4;
+      if (energy > maxEnergy) {
+        maxEnergy = energy;
+        bestIdx = n;
+      }
+    }
+
+    // 3. Update the shared window center index under lock
+    if (bestIdx != -1 && _receiverIndex == 0) {
+      taskENTER_CRITICAL(&_sharedData.spinlock);
+      _sharedData.sharedWindowCenterIdx = bestIdx;
+      taskEXIT_CRITICAL(&_sharedData.spinlock);
+    }
+
+    // 4. Extract window of 15 samples centered around sharedWindowCenterIdx
+    int center = 0;
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    center = _sharedData.sharedWindowCenterIdx;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+    for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
+      int n = center - (Constant::FFT_WINDOW_SIZE / 2) + k;
+      if (n >= 0 && n < (int)Constant::ADC_SAMPLES) {
+        outI[k] = s_tempOutI[_receiverIndex][n];
+        outQ[k] = s_tempOutQ[_receiverIndex][n];
+      } else {
+        outI[k] = 0;
+        outQ[k] = 0;
+      }
+    }
+  } else {
+    // Pulse 1 to 7: Compute matched filter only at the 15 windowed samples
+    int center = 0;
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    center = _sharedData.sharedWindowCenterIdx;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+    for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
+      int n = center - (Constant::FFT_WINDOW_SIZE / 2) + k;
+      if (n >= 0 && n < (int)Constant::ADC_SAMPLES) {
+        int32_t sumI = 0;
+        int32_t sumQ = 0;
+
+        int maxK = (n < _filterLen) ? (n + 1) : _filterLen;
+        for (int k_filt = 0; k_filt < maxK; ++k_filt) {
+          int16_t sigI = _demodI[n - k_filt];
+          int16_t sigQ = _demodQ[n - k_filt];
+          int16_t coefI = _hI[k_filt];
+          int16_t coefQ = _hQ[k_filt];
+
+          if (coefI != 0) {
+            sumI += (int32_t)sigI * coefI;
+            sumQ += (int32_t)sigQ * coefI;
+          }
+          if (coefQ != 0) {
+            sumI -= (int32_t)sigQ * coefQ;
+            sumQ += (int32_t)sigI * coefQ;
+          }
+        }
+
+        outI[k] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
+        outQ[k] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
+      } else {
+        outI[k] = 0;
+        outQ[k] = 0;
+      }
+    }
   }
 }
 
@@ -207,43 +282,50 @@ void ReceiverApp::run() {
   performIQDemodulation(tempRaw);
   performMatchedFiltering(pulseIdx);
 
-  int16_t* outI = (_receiverIndex == 0) ? _sharedData.channelL_I[pulseIdx] : _sharedData.channelR_I[pulseIdx];
-  int16_t* outQ = (_receiverIndex == 0) ? _sharedData.channelL_Q[pulseIdx] : _sharedData.channelR_Q[pulseIdx];
+  // Copy streaming values to localBuffer ONLY for Pulse 0 to save bandwidth
+  if (pulseIdx == 0) {
+    uint8_t mode = 0;
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    mode = _sharedData.streamMode;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-  // Copy streaming values to localBuffer
-  uint8_t mode = 0;
-  taskENTER_CRITICAL(&_sharedData.spinlock);
-  mode = _sharedData.streamMode;
-  taskEXIT_CRITICAL(&_sharedData.spinlock);
-
-  static int16_t localBuffer[Constant::ADC_SAMPLES];
-  if (mode == 0) { // STREAM_RAW
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      localBuffer[n] = tempRaw[n];
+    static int16_t localBuffer[Constant::ADC_SAMPLES];
+    if (mode == 0) { // STREAM_RAW
+      for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+        localBuffer[n] = tempRaw[n];
+      }
+    } else if (mode == 1) { // STREAM_DEMOD
+      performIQDemodulation(tempRaw);
+      for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+        int32_t sqVal = (int32_t)_demodI[n] * _demodI[n] + (int32_t)_demodQ[n] * _demodQ[n];
+        localBuffer[n] = (int16_t)constrain(isqrt32(sqVal), 0, Constant::Q15_MAX);
+      }
+    } else if (mode == 2) { // STREAM_COMPRESSED
+      for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+        int32_t sqVal = (int32_t)s_tempOutI[_receiverIndex][n] * s_tempOutI[_receiverIndex][n] + 
+                          (int32_t)s_tempOutQ[_receiverIndex][n] * s_tempOutQ[_receiverIndex][n];
+        localBuffer[n] = (int16_t)constrain(isqrt32(sqVal >> 4), 0, Constant::Q15_MAX);
+      }
     }
-  } else if (mode == 1) { // STREAM_DEMOD
-    performIQDemodulation(tempRaw);
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      int32_t sqVal = (int32_t)_demodI[n] * _demodI[n] + (int32_t)_demodQ[n] * _demodQ[n];
-      localBuffer[n] = (int16_t)constrain(isqrt32(sqVal), 0, Constant::Q15_MAX);
-    }
-  } else if (mode == 2) { // STREAM_COMPRESSED
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      int32_t sqVal = (int32_t)outI[n] * outI[n] + (int32_t)outQ[n] * outQ[n];
-      localBuffer[n] = (int16_t)constrain(isqrt32(sqVal >> 4), 0, Constant::Q15_MAX);
-    }
-  }
 
-  // Copy localBuffer to old adcBuffer for general tracking
-  memcpy((void*)_adcBuffer, localBuffer, sizeof(localBuffer));
-  
-  uint16_t currentAngle = 0;
-  taskENTER_CRITICAL(&_sharedData.spinlock);
-  currentAngle = _sharedData.servoAngle;
-  taskEXIT_CRITICAL(&_sharedData.spinlock);
+    // Copy localBuffer to old adcBuffer for general tracking
+    memcpy((void*)_adcBuffer, localBuffer, sizeof(localBuffer));
+    
+    uint16_t currentAngle = 0;
+    bool isCCW = true;
+    taskENTER_CRITICAL(&_sharedData.spinlock);
+    currentAngle = _sharedData.servoAngle;
+    isCCW = _sharedData.sweepDirectionCCW;
+    taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-  if (_com != nullptr) {
-    _com->sendFrame(_waveFrameId++, localBuffer, Constant::ADC_SAMPLES, currentAngle, _receiverIndex + 1); // receiverId = 1 or 2
+    if (_com != nullptr) {
+      uint16_t angleToSend = currentAngle;
+      if (!isCCW) angleToSend |= 0x8000;
+      if (_waveFrameId % 3 == 0) {
+        _com->sendFrameAsync(_waveFrameId, localBuffer, Constant::ADC_SAMPLES, angleToSend, _receiverIndex + 1); // receiverId = 1 or 2
+      }
+      _waveFrameId++;
+    }
   }
 
   // Signal that this receiver is done processing the current pulse

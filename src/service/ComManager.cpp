@@ -4,7 +4,12 @@ ComManager::ComManager(const char *ssid, const char *password,
                        const char *hostName, uint16_t port)
     : _ssid(ssid), _password(password), _hostName(hostName), _port(port),
       _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE),
-      _isServoEnabled(false), _streamMode(STREAM_RAW) {}
+      _isServoEnabled(false), _streamMode(STREAM_RAW) {
+  for (int i = 0; i < 3; ++i) {
+    _queuedFrames[i].samples = nullptr;
+    _queuedFrames[i].ready = false;
+  }
+}
 
 void ComManager::begin() {
   Serial.println("Starting WiFi STA mode...");
@@ -44,6 +49,13 @@ void ComManager::begin() {
   // Start UDP listening
   _udp.begin(_port);
   Serial.printf("UDP Listening on port %d\n", _port);
+
+  // Allocate dynamic buffers on the heap
+  for (int i = 0; i < 3; ++i) {
+    if (_queuedFrames[i].samples == nullptr) {
+      _queuedFrames[i].samples = (int16_t*)malloc(Constant::ADC_SAMPLES * sizeof(int16_t));
+    }
+  }
 }
 
 void ComManager::update() {
@@ -161,4 +173,31 @@ void ComManager::sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude,
   _udp.beginPacket(_remoteIp, _remotePort);
   _udp.write((const uint8_t *)buf, len);
   _udp.endPacket();
+}
+
+void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle, uint8_t receiverId) {
+  if (!_isStreaming || size != Constant::ADC_SAMPLES) {
+    return;
+  }
+  // Determine queue slot based on receiverId (Rx0 Sum -> slot 2, Rx1 -> slot 0, Rx2 -> slot 1)
+  int slot = (receiverId == 0) ? 2 : (receiverId - 1);
+  if (_queuedFrames[slot].samples == nullptr) return;
+  if (_queuedFrames[slot].ready) return; // Drop frame if previous one is still sending to avoid corruption
+
+  _queuedFrames[slot].frameId = frameId;
+  _queuedFrames[slot].angle = angle;
+  _queuedFrames[slot].receiverId = receiverId;
+  memcpy(_queuedFrames[slot].samples, samples, Constant::ADC_SAMPLES * sizeof(int16_t));
+  _queuedFrames[slot].ready = true;
+}
+
+void ComManager::processAsyncSends() {
+  for (int i = 0; i < 3; ++i) {
+    if (_queuedFrames[i].ready && _queuedFrames[i].samples != nullptr) {
+      sendFrame(_queuedFrames[i].frameId, _queuedFrames[i].samples, Constant::ADC_SAMPLES, _queuedFrames[i].angle, _queuedFrames[i].receiverId);
+      _queuedFrames[i].ready = false;
+      // Yield to let the WiFi stack process and prevent LwIP lockup
+      vTaskDelay(pdMS_TO_TICKS(1));
+    }
+  }
 }

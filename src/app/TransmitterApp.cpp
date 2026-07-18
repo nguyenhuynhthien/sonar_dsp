@@ -17,19 +17,22 @@ void TransmitterApp::begin() {
 void TransmitterApp::run() {
     _com.update(); // Poll UDP socket commands
 
-    // Send angle if it changed and we're not streaming
     bool angleUpdated = false;
     uint16_t currentAngle = 0;
+    bool isCCW = true;
     taskENTER_CRITICAL(&_sharedData.spinlock);
     if (_sharedData.angleUpdated) {
         angleUpdated = true;
         currentAngle = _sharedData.servoAngle;
+        isCCW = _sharedData.sweepDirectionCCW;
         _sharedData.angleUpdated = false;
     }
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 
     if (angleUpdated && !_com.isStreaming()) {
-        _com.sendAngle(currentAngle);
+        uint16_t angleToSend = currentAngle;
+        if (!isCCW) angleToSend |= 0x8000;
+        _com.sendAngle(angleToSend);
     }
 
     // Check if pulse type changed in _com
@@ -40,12 +43,12 @@ void TransmitterApp::run() {
         if (_pulseType == ComManager::PULSE_SINGLE) {
             memcpy(_sharedData.txBuffer, Constant::SINGLE_PULSE_WAVE, Constant::FILTER_COEFFS_LEN);
             _sharedData.txPulseLen = Constant::FILTER_COEFFS_LEN;
-            _sharedData.txPeriodMs = 12;
+            _sharedData.txPeriodMs = Constant::PRI_SINGLE_MS;
             Serial.println("TransmitterApp: switched to Single Pulse");
         } else {
             memcpy(_sharedData.txBuffer, Constant::BARKER13_PULSE_WAVE, Constant::BARKER13_PULSE_LEN);
             _sharedData.txPulseLen = Constant::BARKER13_PULSE_LEN;
-            _sharedData.txPeriodMs = 18;
+            _sharedData.txPeriodMs = Constant::PRI_BARKER13_MS;
             Serial.println("TransmitterApp: switched to Barker 13");
         }
         taskEXIT_CRITICAL(&_sharedData.spinlock);
@@ -54,8 +57,12 @@ void TransmitterApp::run() {
     if (_com.isStreaming()) {
         unsigned long startMicros = micros();
 
-        // 1. Trigger Receiver on Core 1
+        int currentPulse = 0;
         taskENTER_CRITICAL(&_sharedData.spinlock);
+        currentPulse = _sharedData.pulseIndex;
+        if (currentPulse == 0) {
+            _sharedData.stepComplete = false;
+        }
         _sharedData.triggerTx = true;
         _sharedData.processingDone = 0;
         _sharedData.adcReady = false;
@@ -66,16 +73,27 @@ void TransmitterApp::run() {
             xTaskNotifyGive(_sharedData.rxTaskHandle);
         }
 
-        // 2. Wait for Core 1 (ReceiverApp) to finish sampling & DSP & UDP sending
+        // 2. Wait for Core 1: on Pulse 7, wait for the entire step to complete, otherwise wait for Rx1/Rx2
         unsigned long waitStart = millis();
-        while (_sharedData.processingDone != 3 && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
-            delayMicroseconds(100);
+        if (currentPulse == 7) {
+            while (!_sharedData.stepComplete && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
+                delayMicroseconds(Constant::TX_BUSY_WAIT_US);
+            }
+        } else {
+            while (_sharedData.processingDone != 3 && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
+                delayMicroseconds(Constant::TX_BUSY_WAIT_US);
+            }
         }
+        unsigned long waitRxTime = millis() - waitStart;
 
         // Wait for ScannerTask to process the step and clear requestServoStep
-        while (_sharedData.requestServoStep && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
-            delayMicroseconds(100);
+        unsigned long waitStart2 = millis();
+        while (_sharedData.requestServoStep && (millis() - waitStart2) < Constant::TX_RESPONSE_TIMEOUT_MS) {
+            vTaskDelay(1); // Yield CPU to let the lower-priority ScannerTask run
         }
+        unsigned long waitServoTime = millis() - waitStart2;
+
+
 
         // Clear processingDone for the next cycle
         taskENTER_CRITICAL(&_sharedData.spinlock);
@@ -83,7 +101,7 @@ void TransmitterApp::run() {
         taskEXIT_CRITICAL(&_sharedData.spinlock);
 
         // Maintain configured rate/period (PRI) using hybrid microsecond-accurate timer
-        uint32_t periodMs = 12;
+        uint32_t periodMs = 30;
         taskENTER_CRITICAL(&_sharedData.spinlock);
         periodMs = _sharedData.txPeriodMs;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
@@ -92,7 +110,7 @@ void TransmitterApp::run() {
         unsigned long periodUs = periodMs * 1000;
         if (elapsedUs < periodUs) {
             unsigned long remainingUs = periodUs - elapsedUs;
-            if (remainingUs > 2000) {
+            if (remainingUs > Constant::TX_YIELD_THRESHOLD_US) {
                 // Yield to other tasks for the bulk of the remaining time
                 vTaskDelay(pdMS_TO_TICKS(remainingUs / 1000 - 1));
             }
