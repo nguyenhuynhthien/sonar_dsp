@@ -185,6 +185,12 @@ void CombineReceiverApp::run() {
     }
 
     int c = _sharedData.pulseIndex;
+
+    // Send Sum Channel waveform (Rx0) using Pulse 0 matched filter buffers as soon as Pulse 0 is processed
+    if (c == 0) {
+        sendSumWaveformFrame(0);
+    }
+
     int nextPulseIdx = c + 1;
 
     if (nextPulseIdx < 8) {
@@ -193,8 +199,7 @@ void CombineReceiverApp::run() {
         _sharedData.pulseIndex = nextPulseIdx;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     } else {
-        // 8th pulse processed. Send Sum Channel waveform (Rx0) using Pulse 0 and process target details.
-        sendSumWaveformFrame(0);
+        // 8th pulse processed. Process target details.
         processTargetAndVelocity();
 
         // Reset for the next batch of 8 pulses

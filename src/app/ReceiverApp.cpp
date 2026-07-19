@@ -312,10 +312,7 @@ void ReceiverApp::run() {
     memcpy((void*)_adcBuffer, localBuffer, sizeof(localBuffer));
 
     if (_com != nullptr) {
-      if (_waveFrameId % 3 == 0) {
-        _com->sendFrameAsync(_waveFrameId, localBuffer, Constant::ADC_SAMPLES, _receiverIndex + 1); // receiverId = 1 or 2
-      }
-      _waveFrameId++;
+      _com->sendFrameAsync(_waveFrameId++, localBuffer, Constant::ADC_SAMPLES, _receiverIndex + 1); // receiverId = 1 or 2
     }
   }
 

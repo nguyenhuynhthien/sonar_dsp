@@ -188,13 +188,16 @@ void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t
   _queuedFrames[slot].ready = true;
 }
 
-void ComManager::processAsyncSends() {
+bool ComManager::processAsyncSends() {
+  bool sentAny = false;
   for (int i = 0; i < 3; ++i) {
     if (_queuedFrames[i].ready && _queuedFrames[i].samples != nullptr) {
       sendFrame(_queuedFrames[i].frameId, _queuedFrames[i].samples, Constant::ADC_SAMPLES, _queuedFrames[i].receiverId);
       _queuedFrames[i].ready = false;
+      sentAny = true;
       // Yield to let the WiFi stack process and prevent LwIP lockup
       vTaskDelay(pdMS_TO_TICKS(1));
     }
   }
+  return sentAny;
 }

@@ -64,7 +64,7 @@ constexpr uint32_t WIFI_CONNECT_TIMEOUT_LIMIT =
     20; // 20 iterations of 500ms = 10 seconds
 constexpr uint32_t WIFI_CONNECT_DELAY_MS = 500;
 constexpr uint32_t WIFI_ARP_DELAY_MS = 300;
-constexpr uint32_t UDP_PACE_DELAY_US = 100;
+constexpr uint32_t UDP_PACE_DELAY_US = 250;
 
 // Network
 constexpr uint16_t DEFAULT_PORT = 8080;

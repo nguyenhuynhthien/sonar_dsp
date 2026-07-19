@@ -175,8 +175,12 @@ void setup() {
       [](void *param) {
         Serial.println("Async Send Task (Core 0) started.");
         while (true) {
-          com.processAsyncSends();
-          vTaskDelay(pdMS_TO_TICKS(5));
+          bool sent = com.processAsyncSends();
+          if (!sent) {
+            vTaskDelay(pdMS_TO_TICKS(5));
+          } else {
+            vTaskDelay(pdMS_TO_TICKS(1));
+          }
         }
       },
       "AsyncSendTask", 4096, nullptr,

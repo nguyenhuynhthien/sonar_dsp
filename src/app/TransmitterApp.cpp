@@ -59,11 +59,11 @@ void TransmitterApp::run() {
         unsigned long waitStart = millis();
         if (currentPulse == 7) {
             while (!_sharedData.stepComplete && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
-                delayMicroseconds(Constant::TX_BUSY_WAIT_US);
+                vTaskDelay(1);
             }
         } else {
             while (_sharedData.processingDone != 3 && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
-                delayMicroseconds(Constant::TX_BUSY_WAIT_US);
+                vTaskDelay(1);
             }
         }
         unsigned long waitRxTime = millis() - waitStart;
