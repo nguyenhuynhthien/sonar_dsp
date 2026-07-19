@@ -133,6 +133,11 @@ void setup() {
       [](void *param) {
         Serial.println("Scanner Task (Core 0) started.");
         while (true) {
+          int targetAngle = com.getTargetServoAngle();
+          if (targetAngle != -1) {
+            scannerApp.setAngle(targetAngle);
+          }
+
           bool stepRequested = false;
           bool streaming = com.isStreaming();
 

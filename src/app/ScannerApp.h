@@ -13,6 +13,7 @@ public:
     void begin();
     void step();
     void run();
+    void setAngle(int angle);
 
 private:
     ServoService& _servoService;

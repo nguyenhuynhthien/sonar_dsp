@@ -34,3 +34,17 @@ void ScannerApp::step() {
 }
 
 void ScannerApp::run() { step(); }
+
+void ScannerApp::setAngle(int angle) {
+  _currentAngle = angle;
+  _servoService.writeAngle(_currentAngle);
+
+  taskENTER_CRITICAL(&_sharedData.spinlock);
+  _sharedData.servoAngle = _currentAngle;
+  _sharedData.angleUpdated = true;
+  taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+  uint16_t angleToSend = _currentAngle;
+  if (_step <= 0) angleToSend |= 0x8000;
+  _com.sendAngle(angleToSend);
+}

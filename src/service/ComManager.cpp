@@ -4,7 +4,8 @@ ComManager::ComManager(const char *ssid, const char *password,
                        const char *hostName, uint16_t port)
     : _ssid(ssid), _password(password), _hostName(hostName), _port(port),
       _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE),
-      _isServoEnabled(false), _streamMode(STREAM_RAW), _txGain(1.0f), _isTxEnabled(false) {
+      _isServoEnabled(false), _streamMode(STREAM_RAW), _txGain(1.0f), 
+      _isTxEnabled(false), _targetServoAngle(-1) {
   for (int i = 0; i < 3; ++i) {
     _queuedFrames[i].samples = nullptr;
     _queuedFrames[i].ready = false;
@@ -124,9 +125,29 @@ void ComManager::update() {
       } else if (command == "tx:off") {
         _isTxEnabled = false;
         Serial.println("Tx Disabled");
+      } else if (command.startsWith("servo:")) {
+        if (command == "servo:on") {
+          _isServoEnabled = true;
+          Serial.println("Servo control enabled.");
+        } else if (command == "servo:off") {
+          _isServoEnabled = false;
+          Serial.println("Servo control disabled.");
+        } else {
+          int angle = command.substring(6).toInt();
+          if (angle >= 0 && angle <= 180) {
+            _targetServoAngle = angle;
+            Serial.printf("Servo command: Move to %d degrees\n", angle);
+          }
+        }
       }
     }
   }
+}
+
+int ComManager::getTargetServoAngle() {
+  int angle = _targetServoAngle;
+  _targetServoAngle = -1;
+  return angle;
 }
 
 bool ComManager::isStreaming() { return _isStreaming; }

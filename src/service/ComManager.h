@@ -35,6 +35,7 @@ public:
     StreamMode getStreamMode() const { return _streamMode; }
     float getTxGain() const { return _txGain; }
     bool isTxEnabled() const { return _isTxEnabled; }
+    int getTargetServoAngle();
 
 private:
     const char* _ssid;
@@ -51,6 +52,7 @@ private:
     StreamMode _streamMode;
     float _txGain;
     bool _isTxEnabled;
+    volatile int _targetServoAngle;
 
     struct QueuedFrame {
         uint16_t frameId;
