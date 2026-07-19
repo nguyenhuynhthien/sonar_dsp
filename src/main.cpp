@@ -22,6 +22,7 @@ SharedSonarData sharedData = {
     .waveSendTaskHandle = nullptr,
     .txBuffer = {0},
     .txPulseLen = 0,
+    .txEnabled = false,
     .simDelaySamples = 400, // Default to 400 samples delay (~2.5ms delay, simulating ~1.8 meters range)
     .simEnabled = true,     // Simulator enabled by default
     .servoAngle = 0,

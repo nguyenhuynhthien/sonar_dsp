@@ -21,6 +21,7 @@ struct SharedSonarData {
     // Shared transmit pulse configuration
     uint8_t txBuffer[Constant::BARKER13_PULSE_LEN];
     volatile size_t txPulseLen;
+    volatile bool txEnabled;
     
     // Simulator config
     volatile uint32_t simDelaySamples;

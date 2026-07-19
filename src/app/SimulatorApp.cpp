@@ -53,10 +53,12 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
         return;
     }
 
-    // Get current servo angle
+    // Get current servo angle and Tx enable state
     int currentAngle = 0;
+    bool txOn = false;
     taskENTER_CRITICAL(&_sharedData.spinlock);
     currentAngle = _sharedData.servoAngle;
+    txOn = _sharedData.txEnabled;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 
     // 1. Generate the raw pulse waveform using SinglePulseApp or Barker13PulseApp dynamically
@@ -88,13 +90,15 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     // Find if the current angle is within any target's beamwidth
     int activeIndex = -1;
     float activeBeamScale = 0.0f;
-    for (int i = 0; i < 3; ++i) {
-        float diff = abs((float)currentAngle - targets[i].angle);
-        if (diff < targets[i].beamwidth) {
-            activeIndex = i;
-            // Triangular beam pattern response: peak at center, 0 at beamwidth edge
-            activeBeamScale = (1.0f - (diff / targets[i].beamwidth)) * targets[i].magnitude;
-            break; // Assuming non-overlapping targets
+    if (txOn) {
+        for (int i = 0; i < 3; ++i) {
+            float diff = abs((float)currentAngle - targets[i].angle);
+            if (diff < targets[i].beamwidth) {
+                activeIndex = i;
+                // Triangular beam pattern response: peak at center, 0 at beamwidth edge
+                activeBeamScale = (1.0f - (diff / targets[i].beamwidth)) * targets[i].magnitude;
+                break; // Assuming non-overlapping targets
+            }
         }
     }
 

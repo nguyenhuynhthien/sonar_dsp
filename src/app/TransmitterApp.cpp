@@ -12,6 +12,7 @@ void TransmitterApp::begin() {
     taskENTER_CRITICAL(&_sharedData.spinlock);
     memset(_sharedData.txBuffer, Constant::DAC_DC_BIAS, Constant::BARKER13_PULSE_LEN);
     _sharedData.txPulseLen = Constant::FILTER_COEFFS_LEN;
+    _sharedData.txEnabled = false;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 }
 
@@ -27,6 +28,7 @@ void TransmitterApp::run() {
         _txGain = currentGain;
         _txEnabled = currentTxEnabled;
         taskENTER_CRITICAL(&_sharedData.spinlock);
+        _sharedData.txEnabled = _txEnabled;
         if (!_txEnabled) {
             memset(_sharedData.txBuffer, Constant::DAC_DC_BIAS, Constant::BARKER13_PULSE_LEN);
             _sharedData.txPulseLen = (_pulseType == ComManager::PULSE_SINGLE) ? Constant::FILTER_COEFFS_LEN : Constant::BARKER13_PULSE_LEN;
