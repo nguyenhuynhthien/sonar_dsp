@@ -25,10 +25,10 @@ public:
     void begin();
     void update();
     bool isStreaming();
-    void sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle, uint8_t receiverId);
+    void sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint8_t receiverId);
     void sendAngle(uint16_t angle);
     void sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude, int32_t velocityBin, uint8_t receiverId);
-    void sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle, uint8_t receiverId);
+    void sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t size, uint8_t receiverId);
     void processAsyncSends();
     PulseType getPulseType() const { return _pulseType; }
     bool isServoEnabled() const { return _isServoEnabled; }
@@ -51,7 +51,6 @@ private:
     struct QueuedFrame {
         uint16_t frameId;
         int16_t* samples;
-        uint16_t angle;
         uint8_t receiverId;
         volatile bool ready;
     };

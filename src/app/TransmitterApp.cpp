@@ -17,24 +17,6 @@ void TransmitterApp::begin() {
 void TransmitterApp::run() {
     _com.update(); // Poll UDP socket commands
 
-    bool angleUpdated = false;
-    uint16_t currentAngle = 0;
-    bool isCCW = true;
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    if (_sharedData.angleUpdated) {
-        angleUpdated = true;
-        currentAngle = _sharedData.servoAngle;
-        isCCW = _sharedData.sweepDirectionCCW;
-        _sharedData.angleUpdated = false;
-    }
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
-
-    if (angleUpdated && !_com.isStreaming()) {
-        uint16_t angleToSend = currentAngle;
-        if (!isCCW) angleToSend |= 0x8000;
-        _com.sendAngle(angleToSend);
-    }
-
     // Check if pulse type changed in _com
     ComManager::PulseType currentType = _com.getPulseType();
     if (currentType != _pulseType) {

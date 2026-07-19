@@ -5,10 +5,11 @@
 #include "../service/ServoService.h"
 
 struct SharedSonarData;
+class ComManager;
 
 class ScannerApp {
 public:
-    ScannerApp(ServoService& servoService, SharedSonarData& sharedData);
+    ScannerApp(ServoService& servoService, SharedSonarData& sharedData, ComManager& com);
     void begin();
     void step();
     void run();
@@ -16,6 +17,7 @@ public:
 private:
     ServoService& _servoService;
     SharedSonarData& _sharedData;
+    ComManager& _com;
     int _currentAngle;
     int _step;
 };

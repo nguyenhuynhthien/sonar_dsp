@@ -1,8 +1,9 @@
 #include "ScannerApp.h"
 #include "TransmitterApp.h"
+#include "../service/ComManager.h"
 
-ScannerApp::ScannerApp(ServoService &servoService, SharedSonarData &sharedData)
-    : _servoService(servoService), _sharedData(sharedData), _currentAngle(0),
+ScannerApp::ScannerApp(ServoService &servoService, SharedSonarData &sharedData, ComManager &com)
+    : _servoService(servoService), _sharedData(sharedData), _com(com), _currentAngle(0),
       _step(Constant::SERVO_STEP_DEG) {}
 
 void ScannerApp::begin() {
@@ -26,6 +27,10 @@ void ScannerApp::step() {
   _sharedData.sweepDirectionCCW = (_step > 0);
   _sharedData.angleUpdated = true;
   taskEXIT_CRITICAL(&_sharedData.spinlock);
+
+  uint16_t angleToSend = _currentAngle;
+  if (_step <= 0) angleToSend |= 0x8000; // CW sweep direction flag
+  _com.sendAngle(angleToSend);
 }
 
 void ScannerApp::run() { step(); }

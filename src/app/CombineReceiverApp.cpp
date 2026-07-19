@@ -50,18 +50,8 @@ void CombineReceiverApp::sendSumWaveformFrame(int c) {
     }
 
     if (_com != nullptr) {
-        uint16_t currentAngle = 0;
-        bool isCCW = true;
-        taskENTER_CRITICAL(&_sharedData.spinlock);
-        currentAngle = _sharedData.servoAngle;
-        isCCW = _sharedData.sweepDirectionCCW;
-        taskEXIT_CRITICAL(&_sharedData.spinlock);
-
-        uint16_t angleToSend = currentAngle;
-        if (!isCCW) angleToSend |= 0x8000;
-
         static uint16_t sumWaveFrameId = 0;
-        _com->sendFrameAsync(sumWaveFrameId++, sumBuffer, Constant::ADC_SAMPLES, angleToSend, 0); // receiverId = 0 (Sum Channel)
+        _com->sendFrameAsync(sumWaveFrameId++, sumBuffer, Constant::ADC_SAMPLES, 0); // receiverId = 0 (Sum Channel)
     }
 }
 

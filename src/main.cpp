@@ -64,7 +64,7 @@ AdcSignal adc2(ADC1_CHANNEL_5);
 
 ComManager com(ssid, password, hostName);
 ServoService servoService;
-ScannerApp scannerApp(servoService, sharedData);
+ScannerApp scannerApp(servoService, sharedData, com);
 ReceiverApp rxApp1(sharedData, sharedData.adcBuffer1, 0);
 ReceiverApp rxApp2(sharedData, sharedData.adcBuffer2, 1);
 TransmitterApp txApp(com, sharedData);

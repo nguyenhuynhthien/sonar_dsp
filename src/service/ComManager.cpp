@@ -116,7 +116,7 @@ void ComManager::update() {
 bool ComManager::isStreaming() { return _isStreaming; }
 
 void ComManager::sendFrame(uint16_t frameId, const int16_t *samples,
-                           size_t size, uint16_t angle, uint8_t receiverId) {
+                           size_t size, uint8_t receiverId) {
   if (!_isStreaming || size != Constant::ADC_SAMPLES) {
     return;
   }
@@ -127,7 +127,6 @@ void ComManager::sendFrame(uint16_t frameId, const int16_t *samples,
   struct __attribute__((packed)) ChunkHeader {
     uint16_t frameId;
     uint8_t chunkIdx;
-    uint16_t angle;
     uint8_t receiverId;
   };
 
@@ -135,7 +134,6 @@ void ComManager::sendFrame(uint16_t frameId, const int16_t *samples,
     ChunkHeader header;
     header.frameId = frameId;
     header.chunkIdx = (uint8_t)i;
-    header.angle = angle;
     header.receiverId = receiverId;
 
     _udp.beginPacket(_remoteIp, _remotePort);
@@ -175,7 +173,7 @@ void ComManager::sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude,
   _udp.endPacket();
 }
 
-void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t size, uint16_t angle, uint8_t receiverId) {
+void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t size, uint8_t receiverId) {
   if (!_isStreaming || size != Constant::ADC_SAMPLES) {
     return;
   }
@@ -185,7 +183,6 @@ void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t
   if (_queuedFrames[slot].ready) return; // Drop frame if previous one is still sending to avoid corruption
 
   _queuedFrames[slot].frameId = frameId;
-  _queuedFrames[slot].angle = angle;
   _queuedFrames[slot].receiverId = receiverId;
   memcpy(_queuedFrames[slot].samples, samples, Constant::ADC_SAMPLES * sizeof(int16_t));
   _queuedFrames[slot].ready = true;
@@ -194,7 +191,7 @@ void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t
 void ComManager::processAsyncSends() {
   for (int i = 0; i < 3; ++i) {
     if (_queuedFrames[i].ready && _queuedFrames[i].samples != nullptr) {
-      sendFrame(_queuedFrames[i].frameId, _queuedFrames[i].samples, Constant::ADC_SAMPLES, _queuedFrames[i].angle, _queuedFrames[i].receiverId);
+      sendFrame(_queuedFrames[i].frameId, _queuedFrames[i].samples, Constant::ADC_SAMPLES, _queuedFrames[i].receiverId);
       _queuedFrames[i].ready = false;
       // Yield to let the WiFi stack process and prevent LwIP lockup
       vTaskDelay(pdMS_TO_TICKS(1));

@@ -310,19 +310,10 @@ void ReceiverApp::run() {
 
     // Copy localBuffer to old adcBuffer for general tracking
     memcpy((void*)_adcBuffer, localBuffer, sizeof(localBuffer));
-    
-    uint16_t currentAngle = 0;
-    bool isCCW = true;
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    currentAngle = _sharedData.servoAngle;
-    isCCW = _sharedData.sweepDirectionCCW;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
 
     if (_com != nullptr) {
-      uint16_t angleToSend = currentAngle;
-      if (!isCCW) angleToSend |= 0x8000;
       if (_waveFrameId % 3 == 0) {
-        _com->sendFrameAsync(_waveFrameId, localBuffer, Constant::ADC_SAMPLES, angleToSend, _receiverIndex + 1); // receiverId = 1 or 2
+        _com->sendFrameAsync(_waveFrameId, localBuffer, Constant::ADC_SAMPLES, _receiverIndex + 1); // receiverId = 1 or 2
       }
       _waveFrameId++;
     }
