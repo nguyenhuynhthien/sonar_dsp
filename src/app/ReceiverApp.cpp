@@ -269,10 +269,11 @@ void ReceiverApp::run() {
   }
   int16_t mean = sum / (int)Constant::ADC_SAMPLES;
 
-  // 2. DC-filter the pulse to a local temp array and convert to Q15 by shifting left by 4
+  // 2. DC-filter the pulse to a local temp array and convert to Q15 by shifting left by 4 safely
   static int16_t tempRaw[Constant::ADC_SAMPLES];
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    tempRaw[n] = (int16_t)(localRawSamples[n] - mean) << 4;
+    int32_t val = ((int32_t)localRawSamples[n] - mean) << 4;
+    tempRaw[n] = (int16_t)constrain(val, Constant::Q15_MIN, Constant::Q15_MAX);
   }
 
   // Get current pulse index

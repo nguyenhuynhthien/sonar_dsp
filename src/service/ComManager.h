@@ -33,6 +33,8 @@ public:
     PulseType getPulseType() const { return _pulseType; }
     bool isServoEnabled() const { return _isServoEnabled; }
     StreamMode getStreamMode() const { return _streamMode; }
+    float getTxGain() const { return _txGain; }
+    bool isTxEnabled() const { return _isTxEnabled; }
 
 private:
     const char* _ssid;
@@ -47,6 +49,8 @@ private:
     PulseType _pulseType;
     bool _isServoEnabled;
     StreamMode _streamMode;
+    float _txGain;
+    bool _isTxEnabled;
 
     struct QueuedFrame {
         uint16_t frameId;

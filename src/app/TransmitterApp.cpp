@@ -3,13 +3,14 @@
 #include "Barker13PulseApp.h"
 
 TransmitterApp::TransmitterApp(ComManager& com, SharedSonarData& sharedData)
-    : _com(com), _sharedData(sharedData), _frameId(0), _pulseType(ComManager::PULSE_SINGLE), _txPulseLen(Constant::FILTER_COEFFS_LEN) {
+    : _com(com), _sharedData(sharedData), _frameId(0), _pulseType(ComManager::PULSE_SINGLE),
+      _txPulseLen(Constant::FILTER_COEFFS_LEN), _txGain(1.0f), _txEnabled(false) {
 }
 
 void TransmitterApp::begin() {
-    // Copy default single pulse wave to shared memory
+    // Default is Tx disabled, so initialize txBuffer with pure bias level (127)
     taskENTER_CRITICAL(&_sharedData.spinlock);
-    memcpy(_sharedData.txBuffer, Constant::SINGLE_PULSE_WAVE, Constant::FILTER_COEFFS_LEN);
+    memset(_sharedData.txBuffer, Constant::DAC_DC_BIAS, Constant::BARKER13_PULSE_LEN);
     _sharedData.txPulseLen = Constant::FILTER_COEFFS_LEN;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 }
@@ -17,21 +18,38 @@ void TransmitterApp::begin() {
 void TransmitterApp::run() {
     _com.update(); // Poll UDP socket commands
 
-    // Check if pulse type changed in _com
+    // Check if pulse type, gain, or tx enable changed in _com
     ComManager::PulseType currentType = _com.getPulseType();
-    if (currentType != _pulseType) {
+    float currentGain = _com.getTxGain();
+    bool currentTxEnabled = _com.isTxEnabled();
+    if (currentType != _pulseType || currentGain != _txGain || currentTxEnabled != _txEnabled) {
         _pulseType = currentType;
+        _txGain = currentGain;
+        _txEnabled = currentTxEnabled;
         taskENTER_CRITICAL(&_sharedData.spinlock);
-        if (_pulseType == ComManager::PULSE_SINGLE) {
-            memcpy(_sharedData.txBuffer, Constant::SINGLE_PULSE_WAVE, Constant::FILTER_COEFFS_LEN);
-            _sharedData.txPulseLen = Constant::FILTER_COEFFS_LEN;
-            _sharedData.txPeriodMs = Constant::PRI_SINGLE_MS;
-            Serial.println("TransmitterApp: switched to Single Pulse");
+        if (!_txEnabled) {
+            memset(_sharedData.txBuffer, Constant::DAC_DC_BIAS, Constant::BARKER13_PULSE_LEN);
+            _sharedData.txPulseLen = (_pulseType == ComManager::PULSE_SINGLE) ? Constant::FILTER_COEFFS_LEN : Constant::BARKER13_PULSE_LEN;
+            _sharedData.txPeriodMs = (_pulseType == ComManager::PULSE_SINGLE) ? Constant::PRI_SINGLE_MS : Constant::PRI_BARKER13_MS;
+            Serial.println("TransmitterApp: Tx Disabled (Pure Bias)");
         } else {
-            memcpy(_sharedData.txBuffer, Constant::BARKER13_PULSE_WAVE, Constant::BARKER13_PULSE_LEN);
-            _sharedData.txPulseLen = Constant::BARKER13_PULSE_LEN;
-            _sharedData.txPeriodMs = Constant::PRI_BARKER13_MS;
-            Serial.println("TransmitterApp: switched to Barker 13");
+            if (_pulseType == ComManager::PULSE_SINGLE) {
+                for (size_t i = 0; i < Constant::FILTER_COEFFS_LEN; ++i) {
+                    int dev = (int)Constant::SINGLE_PULSE_WAVE[i] - Constant::DAC_DC_BIAS;
+                    _sharedData.txBuffer[i] = (uint8_t)(Constant::DAC_DC_BIAS + (int)(dev * _txGain));
+                }
+                _sharedData.txPulseLen = Constant::FILTER_COEFFS_LEN;
+                _sharedData.txPeriodMs = Constant::PRI_SINGLE_MS;
+                Serial.printf("TransmitterApp: Single Pulse with gain %.4f\n", _txGain);
+            } else {
+                for (size_t i = 0; i < Constant::BARKER13_PULSE_LEN; ++i) {
+                    int dev = (int)Constant::BARKER13_PULSE_WAVE[i] - Constant::DAC_DC_BIAS;
+                    _sharedData.txBuffer[i] = (uint8_t)(Constant::DAC_DC_BIAS + (int)(dev * _txGain));
+                }
+                _sharedData.txPulseLen = Constant::BARKER13_PULSE_LEN;
+                _sharedData.txPeriodMs = Constant::PRI_BARKER13_MS;
+                Serial.printf("TransmitterApp: Barker 13 with gain %.4f\n", _txGain);
+            }
         }
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     }

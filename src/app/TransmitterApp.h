@@ -25,6 +25,8 @@ private:
     uint16_t _frameId;
     ComManager::PulseType _pulseType;
     size_t _txPulseLen;
+    float _txGain;
+    bool _txEnabled;
 };
 
 #endif // TRANSMITTER_APP_H

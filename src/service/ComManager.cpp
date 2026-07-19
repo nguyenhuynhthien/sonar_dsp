@@ -4,7 +4,7 @@ ComManager::ComManager(const char *ssid, const char *password,
                        const char *hostName, uint16_t port)
     : _ssid(ssid), _password(password), _hostName(hostName), _port(port),
       _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE),
-      _isServoEnabled(false), _streamMode(STREAM_RAW) {
+      _isServoEnabled(false), _streamMode(STREAM_RAW), _txGain(1.0f), _isTxEnabled(false) {
   for (int i = 0; i < 3; ++i) {
     _queuedFrames[i].samples = nullptr;
     _queuedFrames[i].ready = false;
@@ -108,6 +108,22 @@ void ComManager::update() {
       } else if (command == "mode:compressed") {
         _streamMode = STREAM_COMPRESSED;
         Serial.println("Streaming mode: Pulse Compressed");
+      } else if (command.startsWith("tx_atten:")) {
+        String valStr = command.substring(9);
+        if (valStr == "mute") {
+          _txGain = 0.0f;
+          Serial.println("Tx attenuation: Mute");
+        } else {
+          int attenDb = valStr.toInt();
+          _txGain = powf(10.0f, -attenDb / 20.0f);
+          Serial.printf("Tx attenuation: -%d dB (gain: %.4f)\n", attenDb, _txGain);
+        }
+      } else if (command == "tx:on") {
+        _isTxEnabled = true;
+        Serial.println("Tx Enabled");
+      } else if (command == "tx:off") {
+        _isTxEnabled = false;
+        Serial.println("Tx Disabled");
       }
     }
   }
