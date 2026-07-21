@@ -42,17 +42,17 @@ SharedSonarData sharedData = {
     .velocityRequested = false,
     .pulseIndex = 0,
     .txPeriodMs = 30,
-    .channelL_I = {{0}},
-    .channelL_Q = {{0}},
-    .channelR_I = {{0}},
-    .channelR_Q = {{0}},
+    .matrixSum_I = {nullptr},
+
+    .matrixSum_Q = {nullptr},
+    .diffAccumulator = nullptr,
+    .sumAccumulator = nullptr,
     .sharedDemodI = {0},
     .sharedDemodQ = {0},
     .dsp_scratchpad = {{0.0f}},
     .sharedPeakIdx = 0,
     .sharedWindowCenterIdx = 0
 };
-
 
 // WiFi SSID, password and MDNS hostname
 const char *ssid = "Noel";
@@ -76,6 +76,7 @@ SyncSignalApp syncApp(sharedData, dac1, dac2, simulatorApp, adc1, adc2);
 CombineReceiverApp combineRxApp(sharedData);
 
 #include <esp_bt.h>
+#include <esp_heap_caps.h>
 
 void setup() {
   Serial.begin(Constant::SERIAL_BAUD_RATE);
@@ -91,6 +92,24 @@ void setup() {
   // Initialize WiFi/UDP first so that network driver gets priority on heap allocations
   com.begin();
   Serial.printf("Heap còn lại cho Wi-Fi/UDP: %d bytes\n", ESP.getFreeHeap());
+
+  // One-time startup allocation of 8x2048 Sum Matrix, diffAccumulator, and sumAccumulator in internal DRAM heap
+  bool allocSuccess = true;
+  for (int i = 0; i < 8; ++i) {
+    sharedData.matrixSum_I[i] = (int16_t*)heap_caps_malloc(Constant::ADC_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    sharedData.matrixSum_Q[i] = (int16_t*)heap_caps_malloc(Constant::ADC_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!sharedData.matrixSum_I[i] || !sharedData.matrixSum_Q[i]) {
+      allocSuccess = false;
+    }
+  }
+  sharedData.diffAccumulator = (int16_t*)heap_caps_malloc(Constant::ADC_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  sharedData.sumAccumulator = (int16_t*)heap_caps_malloc(Constant::ADC_SAMPLES * sizeof(int16_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (!sharedData.diffAccumulator || !sharedData.sumAccumulator) {
+    allocSuccess = false;
+  }
+  Serial.printf("Free heap after 8x2048 matrix allocation: %d bytes (Success: %s)\n", ESP.getFreeHeap(), allocSuccess ? "YES" : "NO");
+
+
 
   // Initialize drivers & local applications (networking is offloaded to Core 0)
 

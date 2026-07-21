@@ -49,12 +49,16 @@ struct SharedSonarData {
     volatile int pulseIndex;
     volatile uint32_t txPeriodMs;
 
-    // Channel Matrices for Left (L) and Right (R) complex signals (Q15: real and imag)
-    // Dimension: [8][15] - Static allocation in BSS to prevent dynamic heap fragmentation
-    int16_t channelL_I[8][Constant::FFT_WINDOW_SIZE];
-    int16_t channelL_Q[8][Constant::FFT_WINDOW_SIZE];
-    int16_t channelR_I[8][Constant::FFT_WINDOW_SIZE];
-    int16_t channelR_Q[8][Constant::FFT_WINDOW_SIZE];
+    // Full 8x2048 Sum Matrix for 8 pulses (Slow-time complex IQ signal)
+    // Allocated once at setup() in internal DRAM heap to prevent static BSS overflow
+    int16_t* matrixSum_I[8];
+    int16_t* matrixSum_Q[8];
+
+    // Difference channel 8-pulse accumulator array & Sum channel 8-pulse accumulator array
+    int16_t* diffAccumulator;
+    int16_t* sumAccumulator;
+
+
 
     // Shared temporary demodulation buffers
     int16_t sharedDemodI[Constant::ADC_SAMPLES];
@@ -62,6 +66,7 @@ struct SharedSonarData {
 
     // Single shared complex scratchpad buffer for ALL DSP operations (Matched Filter & FFT)
     float dsp_scratchpad[Constant::ADC_SAMPLES][2];
+
 
     // Shared variables for Sum-channel Peak detection and FFT
     int sharedPeakIdx;

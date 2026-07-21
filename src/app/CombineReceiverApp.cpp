@@ -34,30 +34,11 @@ static uint32_t isqrt32(uint32_t n) {
 }
 
 void CombineReceiverApp::sendSumWaveformFrame(int c) {
-    int16_t* lI_ptr = (int16_t*)&_sharedData.dsp_scratchpad[0][0];
-    int16_t* lQ_ptr = (int16_t*)&_sharedData.dsp_scratchpad[512][0];
-    int16_t* rI_ptr = (int16_t*)&_sharedData.dsp_scratchpad[1024][0];
-    int16_t* rQ_ptr = (int16_t*)&_sharedData.dsp_scratchpad[1536][0];
-
-    static int16_t s_sumBuffer[Constant::ADC_SAMPLES];
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-        int16_t lI = lI_ptr[n];
-        int16_t lQ = lQ_ptr[n];
-        int16_t rI = rI_ptr[n];
-        int16_t rQ = rQ_ptr[n];
-        int32_t sqL = (int32_t)lI * lI + (int32_t)lQ * lQ;
-        int32_t sqR = (int32_t)rI * rI + (int32_t)rQ * rQ;
-        s_sumBuffer[n] = (int16_t)constrain(isqrt32((sqL + sqR) >> 4), 0, Constant::Q15_MAX);
-    }
-
     if (_com != nullptr) {
         static uint16_t sumWaveFrameId = 0;
-        _com->sendFrameAsync(sumWaveFrameId++, s_sumBuffer, Constant::ADC_SAMPLES, 0); // receiverId = 0 (Sum Channel)
+        _com->sendFrameAsync(sumWaveFrameId++, _sharedData.sumAccumulator, Constant::ADC_SAMPLES, 0); // receiverId = 0 (Sum Channel)
     }
 }
-
-
-
 
 void CombineReceiverApp::processTargetAndVelocity() {
     bool targetDetected = false;
@@ -66,91 +47,94 @@ void CombineReceiverApp::processTargetAndVelocity() {
     int32_t velocity_bin = 0;
     int32_t cleanRawMag = 0;
 
-    int center = 0;
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    center = _sharedData.sharedWindowCenterIdx;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
-
-    int start = center - (Constant::FFT_WINDOW_SIZE / 2);
-    int bestK = -1;
-
-    // Find peak range bin by accumulating Sum Channel energy only within the 15-sample window
-    for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
-        int32_t sumEnergy = 0;
+    // 1. Compute 8-pulse accumulated Sum magnitude across all 2048 samples (scaled >> 1 to fit int16_t Q15 range without peak clipping)
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+        int32_t totalMag = 0;
         for (int p = 0; p < 8; ++p) {
-            int16_t lI = _sharedData.channelL_I[p][k];
-            int16_t lQ = _sharedData.channelL_Q[p][k];
-            int16_t rI = _sharedData.channelR_I[p][k];
-            int16_t rQ = _sharedData.channelR_Q[p][k];
-            int32_t energyL = ((int32_t)lI * lI + (int32_t)lQ * lQ) >> 4;
-            int32_t energyR = ((int32_t)rI * rI + (int32_t)rQ * rQ) >> 4;
-            sumEnergy += energyL + energyR;
+            int32_t re = _sharedData.matrixSum_I[p][n];
+            int32_t im = _sharedData.matrixSum_Q[p][n];
+            int32_t sqVal = (re * re + im * im) >> 4;
+            totalMag += isqrt32(sqVal);
         }
-        if (sumEnergy > maxAcc) {
-            maxAcc = sumEnergy;
-            bestK = k;
-        }
+        _sharedData.sumAccumulator[n] = (int16_t)constrain(totalMag >> 1, 0, Constant::Q15_MAX);
     }
-    
-    if (bestK != -1) {
-        bestIdx = start + bestK;
+
+
+
+
+    // 2. Find peak index across all 2048 samples (ignoring TX blanking region)
+    for (int n = Constant::TX_LEAKAGE_BLANK_SAMPLES; n < (int)Constant::ADC_SAMPLES; ++n) {
+        int32_t mag = _sharedData.sumAccumulator[n];
+        if (mag > maxAcc) {
+            maxAcc = mag;
+            bestIdx = n;
+        }
     }
     _sharedData.sharedPeakIdx = bestIdx;
 
-    // Threshold detection
+    // Target threshold detection based on Q15 magnitude scale
     int filterLen = (_sharedData.txPulseLen == (size_t)Constant::BARKER13_PULSE_LEN) ? 
                     (int)Constant::BARKER13_PULSE_LEN : (int)Constant::FILTER_COEFFS_LEN;
 
+    // Dynamic CFAR noise-floor threshold to prevent false target detections
     if (bestIdx != -1) {
-        int32_t dspGain = (filterLen == (int)Constant::BARKER13_PULSE_LEN) ? 
-                          ((int32_t)(Constant::BARKER13_PULSE_LEN / 2) * Constant::DAC_DC_BIAS) : 
-                          ((int32_t)(Constant::FILTER_COEFFS_LEN / 2) * Constant::DAC_DC_BIAS);
-        int32_t baseThreshold = (filterLen == (int)Constant::BARKER13_PULSE_LEN) ? Constant::BASE_BARKER13_THRESHOLD : Constant::BASE_SINGLE_PULSE_THRESHOLD;
-        int32_t localThreshold = baseThreshold << (14 - Constant::MATCHED_FILTER_SHIFT);
-        int64_t threshVal = (int64_t)localThreshold * dspGain;
-        
-        int64_t estimatedMaxValSq = ((int64_t)maxAcc << 4) / 8;
-        if (estimatedMaxValSq * Constant::TARGET_THRESHOLD_SCALE_SQ >= threshVal * threshVal) {
+        int32_t noiseSum = 0;
+        int noiseCount = 0;
+        for (int n = Constant::TX_LEAKAGE_BLANK_SAMPLES; n < (int)Constant::ADC_SAMPLES; ++n) {
+            noiseSum += _sharedData.sumAccumulator[n];
+            noiseCount++;
+        }
+        int32_t noiseMean = (noiseCount > 0) ? (noiseSum / noiseCount) : 100;
+
+        int32_t minFloor = (filterLen == (int)Constant::BARKER13_PULSE_LEN) ? 700 : 900;
+        int32_t dynamicThresh = noiseMean * 3;
+        if (dynamicThresh < minFloor) dynamicThresh = minFloor;
+
+        if (maxAcc >= dynamicThresh) {
             targetDetected = true;
         }
     }
 
-    if (targetDetected && bestK != -1) {
-        // Collect Sum Channel samples at the peak index for all 8 pulses
-        for (int p = 0; p < 8; ++p) {
-            _sharedData.sharedFftReal[p] = (_sharedData.channelL_I[p][bestK] + _sharedData.channelR_I[p][bestK]) >> 1;
-            _sharedData.sharedFftImag[p] = (_sharedData.channelL_Q[p][bestK] + _sharedData.channelR_Q[p][bestK]) >> 1;
-        }
-
-        // Run 16-point FFT using esp-dsp (8 data points + 8 zero padding)
-        // Complex float input/output stored in shared dsp_scratchpad
-        float* fftBuffer = (float*)_sharedData.dsp_scratchpad;
-        for (int i = 0; i < 8; ++i) {
-            fftBuffer[i * 2 + 0] = (float)_sharedData.sharedFftReal[i];
-            fftBuffer[i * 2 + 1] = (float)_sharedData.sharedFftImag[i];
-        }
-        // Zero-padding from index 8 to 15
-        for (int i = 8; i < (int)Constant::DOPPLER_FFT_LEN; ++i) {
-            fftBuffer[i * 2 + 0] = 0.0f;
-            fftBuffer[i * 2 + 1] = 0.0f;
-        }
-
-        // Run complex FFT
-        dsps_fft2r_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
-        // Bit reverse to order output frequency bins
-        dsps_bit_rev_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
 
 
-        // Find peak frequency bin
-        velocity_bin = 0;
+    if (targetDetected && bestIdx != -1) {
         float maxFftMagSq = -1.0f;
-        for (int k = 0; k < (int)Constant::DOPPLER_FFT_LEN; ++k) {
-            float re = fftBuffer[k * 2 + 0];
-            float im = fftBuffer[k * 2 + 1];
-            float magSq = re * re + im * im;
-            if (magSq > maxFftMagSq) {
-                maxFftMagSq = magSq;
-                velocity_bin = k;
+        int peakRangeBin = bestIdx;
+        velocity_bin = 0;
+
+        int windowStart = bestIdx - (Constant::FFT_WINDOW_SIZE / 2);
+        float* fftBuffer = (float*)_sharedData.dsp_scratchpad;
+
+        // Perform 8-point Doppler FFT across all 15 range bins centered around bestIdx
+        for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
+            int rangeBin = windowStart + k;
+            if (rangeBin < 0 || rangeBin >= (int)Constant::ADC_SAMPLES) continue;
+
+            // Load 8 complex samples from matrixSum_I/Q for current range bin
+            for (int p = 0; p < 8; ++p) {
+                fftBuffer[p * 2 + 0] = (float)_sharedData.matrixSum_I[p][rangeBin];
+                fftBuffer[p * 2 + 1] = (float)_sharedData.matrixSum_Q[p][rangeBin];
+            }
+            // Zero padding from index 8 to 15
+            for (int p = 8; p < (int)Constant::DOPPLER_FFT_LEN; ++p) {
+                fftBuffer[p * 2 + 0] = 0.0f;
+                fftBuffer[p * 2 + 1] = 0.0f;
+            }
+
+            // Run complex FFT
+            dsps_fft2r_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
+            dsps_bit_rev_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
+
+            // Search peak Doppler frequency bin across this range bin
+            for (int f = 0; f < (int)Constant::DOPPLER_FFT_LEN; ++f) {
+                float re = fftBuffer[f * 2 + 0];
+                float im = fftBuffer[f * 2 + 1];
+                float magSq = re * re + im * im;
+                if (magSq > maxFftMagSq) {
+                    maxFftMagSq = magSq;
+                    velocity_bin = f;
+                    peakRangeBin = rangeBin;
+                }
             }
         }
 
@@ -159,7 +143,9 @@ void CombineReceiverApp::processTargetAndVelocity() {
         }
 
         cleanRawMag = (int32_t)sqrtf(maxFftMagSq);
+        bestIdx = peakRangeBin;
     }
+
 
     // Send target details to SonarViewer
     if (_com != nullptr) {
@@ -190,24 +176,19 @@ void CombineReceiverApp::run() {
     }
 
     int c = _sharedData.pulseIndex;
-
-    // Send Sum Channel waveform (Rx0) using Pulse 0 matched filter buffers as soon as Pulse 0 is processed
-    if (c == 0) {
-        sendSumWaveformFrame(0);
-    }
-
     int nextPulseIdx = c + 1;
 
     if (nextPulseIdx < 8) {
-        // Prepare for the next pulse
+        // Pulses 0 to 6: Advance pulse index within the 8-pulse CPI burst
         taskENTER_CRITICAL(&_sharedData.spinlock);
         _sharedData.pulseIndex = nextPulseIdx;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     } else {
-        // 8th pulse processed. Process target details.
+        // Pulse 7: 8th pulse finished. Process 8-pulse CPI accumulation, Doppler FFT, target details, and send Rx0 frame
         processTargetAndVelocity();
+        sendSumWaveformFrame(7);
 
-        // Reset for the next batch of 8 pulses
+        // Signal full 8-pulse step completion to TransmitterApp and trigger Servo step
         taskENTER_CRITICAL(&_sharedData.spinlock);
         _sharedData.pulseIndex = 0;
         _sharedData.accumulatedDataReady = true;
@@ -216,3 +197,7 @@ void CombineReceiverApp::run() {
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     }
 }
+
+
+
+

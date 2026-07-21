@@ -22,14 +22,23 @@ private:
     int16_t* _demodQ = nullptr;
 
     // Matched filter coefficients (up to 104 samples for Barker 13)
-    int16_t _hI[Constant::BARKER13_PULSE_LEN];
-    int16_t _hQ[Constant::BARKER13_PULSE_LEN];
+    struct FilterTap {
+        uint8_t k;
+        int16_t val;
+    };
+    FilterTap _tapsI[Constant::BARKER13_PULSE_LEN];
+    FilterTap _tapsQ[Constant::BARKER13_PULSE_LEN];
+    int _numTapsI = 0;
+    int _numTapsQ = 0;
     int _filterLen = 32;
+    int _matchedFilterShift = 0;
 
     // Internal DSP routines
     void initDSPCoefficients();
+
     void performIQDemodulation(const int16_t* rawSamples);
     void performMatchedFiltering(int pulseIdx);
+
 
     ComManager* _com = nullptr;
     uint16_t _waveFrameId = 0;

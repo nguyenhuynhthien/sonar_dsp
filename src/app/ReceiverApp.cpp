@@ -40,10 +40,12 @@ void ReceiverApp::initDSPCoefficients() {
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 
   _filterLen = pulseLen;
+  _numTapsI = 0;
+  _numTapsQ = 0;
 
-  // Matched filter is time-reversed conjugate of demodulated TX pulse
+  // Pre-calculate sparse non-zero taps for time-reversed conjugate matched filter h(t) = s*(T - t)
   for (int i = 0; i < pulseLen; ++i) {
-    int16_t x = (int16_t)localTxBuffer[i] - Constant::DAC_DC_BIAS; // Keep original 8-bit scale [-128, 127]
+    int16_t x = (int16_t)localTxBuffer[i] - Constant::DAC_DC_BIAS;
 
     int16_t refCos = 0;
     int16_t refSin = 0;
@@ -66,13 +68,32 @@ void ReceiverApp::initDSPCoefficients() {
       break;
     }
 
-    // matched filter: h(t) = s*(T - t)
     int filterIdx = pulseLen - 1 - i;
-    _hI[filterIdx] = (int16_t)(((int32_t)x * refCos) >> 15);
-    _hQ[filterIdx] = - (int16_t)(((int32_t)x * refSin) >> 15); // conjugate
+    int16_t hI = (int16_t)(((int32_t)x * refCos) >> 15);
+    int16_t hQ = - (int16_t)(((int32_t)x * refSin) >> 15);
+
+    if (hI != 0) {
+      _tapsI[_numTapsI++] = { (uint8_t)filterIdx, hI };
+    }
+    if (hQ != 0) {
+      _tapsQ[_numTapsQ++] = { (uint8_t)filterIdx, hQ };
+    }
   }
 
+  // Dynamically calculate Matched Filter shift power-of-two exponent based on active filter taps without magic numbers
+  int maxTaps = (_numTapsI > _numTapsQ) ? _numTapsI : _numTapsQ;
+  if (maxTaps <= 0) maxTaps = 1;
+
+  _matchedFilterShift = 0;
+  while ((1 << _matchedFilterShift) < maxTaps) {
+    _matchedFilterShift++;
+  }
+  // Base Q15 scale offset for optimal dynamic range (Single Pulse ~3.2V, Barker 13 ~11.5V)
+  constexpr int BASE_Q15_SHIFT = 7;
+  _matchedFilterShift += BASE_Q15_SHIFT;
 }
+
+
 
 // Static buffers for receiver apps
 static int16_t s_tempRaw[Constant::ADC_SAMPLES];
@@ -130,123 +151,10 @@ void ReceiverApp::performIQDemodulation(const int16_t *rawSamples) {
   }
 }
 
-void ReceiverApp::performMatchedFiltering(int pulseIdx) {
-  if (!_demodI || !_demodQ)
-    return;
-
-  int16_t* outI = (_receiverIndex == 0) ? _sharedData.channelL_I[pulseIdx] : _sharedData.channelR_I[pulseIdx];
-  int16_t* outQ = (_receiverIndex == 0) ? _sharedData.channelL_Q[pulseIdx] : _sharedData.channelR_Q[pulseIdx];
-
-  int rxIdx = (_receiverIndex >= 0 && _receiverIndex < 2) ? _receiverIndex : 0;
-  int16_t* channelTempOutI = getChannelTempOutI(rxIdx, _sharedData);
-  int16_t* channelTempOutQ = getChannelTempOutQ(rxIdx, _sharedData);
-
-  if (pulseIdx == 0) {
-    // 1. Compute full matched filter for Pulse 0 into dsp_scratchpad for this channel
-    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      int32_t sumI = 0;
-      int32_t sumQ = 0;
-
-      int maxK = (n < _filterLen) ? (n + 1) : _filterLen;
-      for (int k = 0; k < maxK; ++k) {
-        int16_t sigI = _demodI[n - k];
-        int16_t sigQ = _demodQ[n - k];
-        int16_t coefI = _hI[k];
-        int16_t coefQ = _hQ[k];
-
-        if (coefI != 0) {
-          sumI += (int32_t)sigI * coefI;
-          sumQ += (int32_t)sigQ * coefI;
-        }
-        if (coefQ != 0) {
-          sumI -= (int32_t)sigQ * coefQ;
-          sumQ += (int32_t)sigI * coefQ;
-        }
-      }
-
-      channelTempOutI[n] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
-      channelTempOutQ[n] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
-    }
-
-    // 2. Find peak index for Pulse 0 on this channel
-    int bestIdx = -1;
-    int32_t maxEnergy = 0;
-    for (int n = Constant::TX_LEAKAGE_BLANK_SAMPLES; n < (int)Constant::ADC_SAMPLES; ++n) {
-      int32_t energy = ((int32_t)channelTempOutI[n] * channelTempOutI[n] + 
-                        (int32_t)channelTempOutQ[n] * channelTempOutQ[n]) >> 4;
-      if (energy > maxEnergy) {
-        maxEnergy = energy;
-        bestIdx = n;
-      }
-    }
-
-    // 3. Update the shared window center index under lock
-    if (bestIdx != -1 && _receiverIndex == 0) {
-      taskENTER_CRITICAL(&_sharedData.spinlock);
-      _sharedData.sharedWindowCenterIdx = bestIdx;
-      taskEXIT_CRITICAL(&_sharedData.spinlock);
-    }
-
-    // 4. Extract window of 15 samples centered around sharedWindowCenterIdx
-    int center = 0;
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    center = _sharedData.sharedWindowCenterIdx;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
-
-    for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
-      int n = center - (Constant::FFT_WINDOW_SIZE / 2) + k;
-      if (n >= 0 && n < (int)Constant::ADC_SAMPLES) {
-        outI[k] = channelTempOutI[n];
-        outQ[k] = channelTempOutQ[n];
-      } else {
-        outI[k] = 0;
-        outQ[k] = 0;
-      }
-    }
-  } else {
-    // Pulse 1 to 7: Compute matched filter only at the 15 windowed samples
-    int center = 0;
-    taskENTER_CRITICAL(&_sharedData.spinlock);
-    center = _sharedData.sharedWindowCenterIdx;
-    taskEXIT_CRITICAL(&_sharedData.spinlock);
-
-    for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
-      int n = center - (Constant::FFT_WINDOW_SIZE / 2) + k;
-      if (n >= 0 && n < (int)Constant::ADC_SAMPLES) {
-        int32_t sumI = 0;
-        int32_t sumQ = 0;
-
-        int maxK = (n < _filterLen) ? (n + 1) : _filterLen;
-        for (int k_filt = 0; k_filt < maxK; ++k_filt) {
-          int16_t sigI = _demodI[n - k_filt];
-          int16_t sigQ = _demodQ[n - k_filt];
-          int16_t coefI = _hI[k_filt];
-          int16_t coefQ = _hQ[k_filt];
-
-          if (coefI != 0) {
-            sumI += (int32_t)sigI * coefI;
-            sumQ += (int32_t)sigQ * coefI;
-          }
-          if (coefQ != 0) {
-            sumI -= (int32_t)sigQ * coefQ;
-            sumQ += (int32_t)sigI * coefQ;
-          }
-        }
-
-        outI[k] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
-        outQ[k] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
-      } else {
-        outI[k] = 0;
-        outQ[k] = 0;
-      }
-    }
-  }
-}
-
 // Fast integer square root helper
 static uint32_t isqrt32(uint32_t n) {
     uint32_t res = 0;
-    uint32_t bit = 1u << 30; // The second-to-top bit is set
+    uint32_t bit = 1u << 30;
     while (bit > n) {
         bit >>= 2;
     }
@@ -262,7 +170,79 @@ static uint32_t isqrt32(uint32_t n) {
     return res;
 }
 
+void ReceiverApp::performMatchedFiltering(int pulseIdx) {
+  if (!_demodI || !_demodQ)
+    return;
+
+  int rxIdx = (_receiverIndex >= 0 && _receiverIndex < 2) ? _receiverIndex : 0;
+  int16_t* channelTempOutI = getChannelTempOutI(rxIdx, _sharedData);
+  int16_t* channelTempOutQ = getChannelTempOutQ(rxIdx, _sharedData);
+
+  int32_t roundOffset = 1 << (_matchedFilterShift - 1);
+
+  // 1. Ultra-fast sparse tap matched filtering (only iterates over non-zero coefficients)
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+    int32_t sumI = 0;
+    int32_t sumQ = 0;
+
+    for (int t = 0; t < _numTapsI; ++t) {
+      int k = _tapsI[t].k;
+      if (k > n) continue;
+      int16_t cI = _tapsI[t].val;
+      sumI += (int32_t)_demodI[n - k] * cI;
+      sumQ += (int32_t)_demodQ[n - k] * cI;
+    }
+
+    for (int t = 0; t < _numTapsQ; ++t) {
+      int k = _tapsQ[t].k;
+      if (k > n) continue;
+      int16_t cQ = _tapsQ[t].val;
+      sumI -= (int32_t)_demodQ[n - k] * cQ;
+      sumQ += (int32_t)_demodI[n - k] * cQ;
+    }
+
+    channelTempOutI[n] = (int16_t)constrain((sumI + roundOffset) >> _matchedFilterShift, Constant::Q15_MIN, Constant::Q15_MAX);
+    channelTempOutQ[n] = (int16_t)constrain((sumQ + roundOffset) >> _matchedFilterShift, Constant::Q15_MIN, Constant::Q15_MAX);
+  }
+
+
+
+
+
+
+
+
+  // 2. When Rx2 (rxIdx == 1) finishes processing current pulse, update matrixSum_I/Q and accumulate diffAccumulator
+  if (rxIdx == 1 && pulseIdx >= 0 && pulseIdx < 8) {
+    int16_t* ch0_I = getChannelTempOutI(0, _sharedData);
+    int16_t* ch0_Q = getChannelTempOutQ(0, _sharedData);
+    int16_t* ch1_I = getChannelTempOutI(1, _sharedData);
+    int16_t* ch1_Q = getChannelTempOutQ(1, _sharedData);
+
+    for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
+      int32_t sumI = (int32_t)ch0_I[n] + ch1_I[n];
+      int32_t sumQ = (int32_t)ch0_Q[n] + ch1_Q[n];
+      _sharedData.matrixSum_I[pulseIdx][n] = (int16_t)constrain(sumI >> 1, Constant::Q15_MIN, Constant::Q15_MAX);
+      _sharedData.matrixSum_Q[pulseIdx][n] = (int16_t)constrain(sumQ >> 1, Constant::Q15_MIN, Constant::Q15_MAX);
+
+
+      int32_t diffI = (int32_t)ch0_I[n] - ch1_I[n];
+      int32_t diffQ = (int32_t)ch0_Q[n] - ch1_Q[n];
+      int32_t diffSq = (diffI * diffI + diffQ * diffQ) >> 4;
+      int16_t diffMag = (int16_t)constrain(isqrt32(diffSq), 0, Constant::Q15_MAX);
+
+      if (pulseIdx == 0) {
+        _sharedData.diffAccumulator[n] = diffMag;
+      } else {
+        int32_t acc = (int32_t)_sharedData.diffAccumulator[n] + diffMag;
+        _sharedData.diffAccumulator[n] = (int16_t)constrain(acc, 0, Constant::Q15_MAX);
+      }
+    }
+  }
+}
+
 void ReceiverApp::run() {
+
   initDSPCoefficients();
 
   int idx = (_receiverIndex >= 0 && _receiverIndex < 2) ? _receiverIndex : 0;
@@ -289,7 +269,7 @@ void ReceiverApp::run() {
   performIQDemodulation(s_tempRaw);
   performMatchedFiltering(pulseIdx);
 
-  // Copy streaming values ONLY for Pulse 0
+  // Copy streaming values ONLY for Pulse 0 (or Pulse 7 for accumulated diff)
   if (pulseIdx == 0) {
     uint8_t mode = 0;
     taskENTER_CRITICAL(&_sharedData.spinlock);
@@ -326,6 +306,7 @@ void ReceiverApp::run() {
   _sharedData.processingDone |= (1 << _receiverIndex);
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 }
+
 
 
 

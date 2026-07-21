@@ -7,7 +7,7 @@ namespace Constant {
 // Sonar & DSP parameters
 constexpr size_t ADC_SAMPLES = 2048;
 constexpr int FFT_WINDOW_SIZE = 15;
-constexpr size_t FILTER_COEFFS_LEN = 32;
+constexpr size_t FILTER_COEFFS_LEN = 8;
 constexpr int ADC_CHANNEL_RX1 = 4;       // ADC1 Channel 4 (GPIO 32)
 constexpr int ADC_CHANNEL_RX2 = 5;       // ADC1 Channel 5 (GPIO 33)
 constexpr double CENTER_FREQ = 40000.0;  // 40 kHz
@@ -25,19 +25,20 @@ constexpr float SPEED_OF_SOUND = 343.0f; // Speed of sound in air in m/s
 constexpr int16_t Q15_MAX = 32767;
 constexpr int16_t Q15_MIN = -32768;
 constexpr int16_t Q15_DAC_SCALE = 256;
-constexpr int32_t MATCHED_FILTER_ROUND_OFFSET = 512;
-constexpr int MATCHED_FILTER_SHIFT = 10;
+constexpr int32_t MATCHED_FILTER_ROUND_OFFSET = 4096;
+constexpr int MATCHED_FILTER_SHIFT = 13;
 constexpr int64_t TARGET_THRESHOLD_SCALE_SQ = 1048576LL;
+
+
 constexpr int32_t BASE_BARKER13_THRESHOLD = 120;
 constexpr int32_t BASE_SINGLE_PULSE_THRESHOLD = 300;
 constexpr int TX_LEAKAGE_BLANK_SAMPLES = 220;
 constexpr int COMPRESSED_STREAM_SCALE = 3;
 
-// Pre-calculated single pulse waveform (8 cycles of 4 samples/cycle at 40kHz
-// center frequency / 160kHz sample rate)
+// Pre-calculated single pulse waveform (1 chip = 2 cycles of 4 samples/cycle = 8 samples)
 constexpr uint8_t SINGLE_PULSE_WAVE[FILTER_COEFFS_LEN] = {
-    127, 254, 127, 0, 127, 254, 127, 0, 127, 254, 127, 0, 127, 254, 127, 0,
-    127, 254, 127, 0, 127, 254, 127, 0, 127, 254, 127, 0, 127, 254, 127, 0};
+    127, 254, 127, 0, 127, 254, 127, 0};
+
 
 // Pre-calculated Barker 13 waveform (13 chips, 2 cycles of 4 samples/cycle per
 // chip = 8 samples/chip, total 104 samples)
