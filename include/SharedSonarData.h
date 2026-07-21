@@ -50,15 +50,18 @@ struct SharedSonarData {
     volatile uint32_t txPeriodMs;
 
     // Channel Matrices for Left (L) and Right (R) complex signals (Q15: real and imag)
-    // Dimension: [8][2048] - Heap allocated to save static DRAM
-    int16_t* channelL_I[8];
-    int16_t* channelL_Q[8];
-    int16_t* channelR_I[8];
-    int16_t* channelR_Q[8];
+    // Dimension: [8][15] - Static allocation in BSS to prevent dynamic heap fragmentation
+    int16_t channelL_I[8][Constant::FFT_WINDOW_SIZE];
+    int16_t channelL_Q[8][Constant::FFT_WINDOW_SIZE];
+    int16_t channelR_I[8][Constant::FFT_WINDOW_SIZE];
+    int16_t channelR_Q[8][Constant::FFT_WINDOW_SIZE];
 
-    // Shared temporary buffers to avoid redundant heap allocations in ReceiverApps
-    int16_t* sharedDemodI;
-    int16_t* sharedDemodQ;
+    // Shared temporary demodulation buffers
+    int16_t sharedDemodI[Constant::ADC_SAMPLES];
+    int16_t sharedDemodQ[Constant::ADC_SAMPLES];
+
+    // Single shared complex scratchpad buffer for ALL DSP operations (Matched Filter & FFT)
+    float dsp_scratchpad[Constant::ADC_SAMPLES][2];
 
     // Shared variables for Sum-channel Peak detection and FFT
     int sharedPeakIdx;
@@ -66,5 +69,6 @@ struct SharedSonarData {
     int16_t sharedFftReal[Constant::DOPPLER_FFT_LEN];
     int16_t sharedFftImag[Constant::DOPPLER_FFT_LEN];
 };
+
 
 #endif // SHARED_SONAR_DATA_H

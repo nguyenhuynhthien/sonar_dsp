@@ -56,11 +56,13 @@ private:
 
     struct QueuedFrame {
         uint16_t frameId;
-        int16_t* samples;
+        const int16_t* samples;
         uint8_t receiverId;
         volatile bool ready;
     };
     QueuedFrame _queuedFrames[3];
 };
+
+
 
 #endif // COM_MANAGER_H

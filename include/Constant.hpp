@@ -66,11 +66,16 @@ constexpr uint32_t WIFI_CONNECT_DELAY_MS = 500;
 constexpr uint32_t WIFI_ARP_DELAY_MS = 300;
 constexpr uint32_t UDP_PACE_DELAY_US = 250;
 
+// DMA Configuration (I2S ADC)
+constexpr size_t DMA_BUF_COUNT = 2;
+constexpr size_t DMA_BUF_LEN = 512; // 2 x 512 = 1024 frames (or 512 for half-pulse)
+
 // Network
 constexpr uint16_t DEFAULT_PORT = 8080;
 constexpr size_t UDP_BUFFER_SIZE = 32;
 constexpr size_t CHUNK_SAMPLES = 512;
 constexpr size_t CHUNKS_PER_FRAME = 4;
+
 
 // Tasks & System
 constexpr uint32_t SERIAL_BAUD_RATE = 115200;

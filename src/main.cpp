@@ -42,15 +42,17 @@ SharedSonarData sharedData = {
     .velocityRequested = false,
     .pulseIndex = 0,
     .txPeriodMs = 30,
-    .channelL_I = {nullptr},
-    .channelL_Q = {nullptr},
-    .channelR_I = {nullptr},
-    .channelR_Q = {nullptr},
-    .sharedDemodI = nullptr,
-    .sharedDemodQ = nullptr,
+    .channelL_I = {{0}},
+    .channelL_Q = {{0}},
+    .channelR_I = {{0}},
+    .channelR_Q = {{0}},
+    .sharedDemodI = {0},
+    .sharedDemodQ = {0},
+    .dsp_scratchpad = {{0.0f}},
     .sharedPeakIdx = 0,
     .sharedWindowCenterIdx = 0
 };
+
 
 // WiFi SSID, password and MDNS hostname
 const char *ssid = "Noel";
@@ -73,35 +75,25 @@ SimulatorApp simulatorApp(sharedData);
 SyncSignalApp syncApp(sharedData, dac1, dac2, simulatorApp, adc1, adc2);
 CombineReceiverApp combineRxApp(sharedData);
 
+#include <esp_bt.h>
+
 void setup() {
   Serial.begin(Constant::SERIAL_BAUD_RATE);
   delay(Constant::SETUP_DELAY_MS);
   Serial.println("System starting up...");
-  Serial.printf("Free heap at startup: %d bytes\n", ESP.getFreeHeap());
+  
+  // Disable Bluetooth & Release RAM allocated for Bluetooth controller
+  esp_bt_controller_deinit();
+  esp_bt_mem_release(ESP_BT_MODE_BTDM);
 
-  // Initialize WiFi/UDP first so that the network driver gets priority on heap allocations
+  Serial.printf("Free heap after releasing Bluetooth RAM: %d bytes\n", ESP.getFreeHeap());
+
+  // Initialize WiFi/UDP first so that network driver gets priority on heap allocations
   com.begin();
-  Serial.printf("Free heap after WiFi init: %d bytes\n", ESP.getFreeHeap());
-
-  // Dynamically allocate shared matrices and buffers on the heap to prevent DRAM overflow
-  bool allocSuccess = true;
-  for (int i = 0; i < 8; ++i) {
-    sharedData.channelL_I[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
-    sharedData.channelL_Q[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
-    sharedData.channelR_I[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
-    sharedData.channelR_Q[i] = new (std::nothrow) int16_t[Constant::FFT_WINDOW_SIZE];
-    if (!sharedData.channelL_I[i] || !sharedData.channelL_Q[i] || !sharedData.channelR_I[i] || !sharedData.channelR_Q[i]) {
-      allocSuccess = false;
-    }
-  }
-  sharedData.sharedDemodI = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
-  sharedData.sharedDemodQ = new (std::nothrow) int16_t[Constant::ADC_SAMPLES];
-  if (!sharedData.sharedDemodI || !sharedData.sharedDemodQ) {
-    allocSuccess = false;
-  }
-  Serial.printf("Free heap after matrix allocation: %d bytes (Allocation success: %s)\n", ESP.getFreeHeap(), allocSuccess ? "YES" : "NO");
+  Serial.printf("Heap còn lại cho Wi-Fi/UDP: %d bytes\n", ESP.getFreeHeap());
 
   // Initialize drivers & local applications (networking is offloaded to Core 0)
+
   scannerApp.begin();
   txApp.begin();
   rxApp1.begin();

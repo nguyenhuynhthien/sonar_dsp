@@ -74,6 +74,18 @@ void ReceiverApp::initDSPCoefficients() {
 
 }
 
+// Static buffers for receiver apps
+static int16_t s_tempRaw[Constant::ADC_SAMPLES];
+static int16_t s_localBuffer[2][Constant::ADC_SAMPLES];
+
+static inline int16_t* getChannelTempOutI(int rxIdx, SharedSonarData& shared) {
+    return (rxIdx == 0) ? (int16_t*)&shared.dsp_scratchpad[0][0] : (int16_t*)&shared.dsp_scratchpad[1024][0];
+}
+
+static inline int16_t* getChannelTempOutQ(int rxIdx, SharedSonarData& shared) {
+    return (rxIdx == 0) ? (int16_t*)&shared.dsp_scratchpad[512][0] : (int16_t*)&shared.dsp_scratchpad[1536][0];
+}
+
 void ReceiverApp::performIQDemodulation(const int16_t *rawSamples) {
   if (!_demodI || !_demodQ)
     return;
@@ -100,28 +112,23 @@ void ReceiverApp::performIQDemodulation(const int16_t *rawSamples) {
     }
   }
 
-  // Apply 4-sample Moving Average FIR filter to smooth demodulated signals and remove carrier ripple
-  static int16_t tempDemodI[Constant::ADC_SAMPLES];
-  static int16_t tempDemodQ[Constant::ADC_SAMPLES];
-  memcpy(tempDemodI, _demodI, sizeof(tempDemodI));
-  memcpy(tempDemodQ, _demodQ, sizeof(tempDemodQ));
-
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    int32_t sumDemodI = 0;
-    int32_t sumDemodQ = 0;
-    for (int d = 0; d < 4; ++d) {
-      if (n - d >= 0) {
-        sumDemodI += tempDemodI[n - d];
-        sumDemodQ += tempDemodQ[n - d];
-      }
+  // 4-sample moving average filter using rolling sums without dynamic memory
+  int32_t sumI = 0, sumQ = 0;
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES + 3; ++n) {
+    if (n < (int)Constant::ADC_SAMPLES) {
+      sumI += _demodI[n];
+      sumQ += _demodQ[n];
     }
-    _demodI[n] = (int16_t)(sumDemodI >> 2);
-    _demodQ[n] = (int16_t)(sumDemodQ >> 2);
+    if (n >= 4) {
+      sumI -= _demodI[n - 4];
+      sumQ -= _demodQ[n - 4];
+    }
+    if (n >= 3 && (n - 3) < (int)Constant::ADC_SAMPLES) {
+      _demodI[n - 3] = (int16_t)(sumI >> 2);
+      _demodQ[n - 3] = (int16_t)(sumQ >> 2);
+    }
   }
 }
-
-int16_t s_tempOutI[2][Constant::ADC_SAMPLES];
-int16_t s_tempOutQ[2][Constant::ADC_SAMPLES];
 
 void ReceiverApp::performMatchedFiltering(int pulseIdx) {
   if (!_demodI || !_demodQ)
@@ -130,8 +137,12 @@ void ReceiverApp::performMatchedFiltering(int pulseIdx) {
   int16_t* outI = (_receiverIndex == 0) ? _sharedData.channelL_I[pulseIdx] : _sharedData.channelR_I[pulseIdx];
   int16_t* outQ = (_receiverIndex == 0) ? _sharedData.channelL_Q[pulseIdx] : _sharedData.channelR_Q[pulseIdx];
 
+  int rxIdx = (_receiverIndex >= 0 && _receiverIndex < 2) ? _receiverIndex : 0;
+  int16_t* channelTempOutI = getChannelTempOutI(rxIdx, _sharedData);
+  int16_t* channelTempOutQ = getChannelTempOutQ(rxIdx, _sharedData);
+
   if (pulseIdx == 0) {
-    // 1. Compute full matched filter for Pulse 0 into file-scope static buffer
+    // 1. Compute full matched filter for Pulse 0 into dsp_scratchpad for this channel
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
       int32_t sumI = 0;
       int32_t sumQ = 0;
@@ -153,16 +164,16 @@ void ReceiverApp::performMatchedFiltering(int pulseIdx) {
         }
       }
 
-      s_tempOutI[_receiverIndex][n] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
-      s_tempOutQ[_receiverIndex][n] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
+      channelTempOutI[n] = (int16_t)constrain((sumI + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
+      channelTempOutQ[n] = (int16_t)constrain((sumQ + Constant::MATCHED_FILTER_ROUND_OFFSET) >> Constant::MATCHED_FILTER_SHIFT, Constant::Q15_MIN, Constant::Q15_MAX);
     }
 
     // 2. Find peak index for Pulse 0 on this channel
     int bestIdx = -1;
     int32_t maxEnergy = 0;
     for (int n = Constant::TX_LEAKAGE_BLANK_SAMPLES; n < (int)Constant::ADC_SAMPLES; ++n) {
-      int32_t energy = ((int32_t)s_tempOutI[_receiverIndex][n] * s_tempOutI[_receiverIndex][n] + 
-                        (int32_t)s_tempOutQ[_receiverIndex][n] * s_tempOutQ[_receiverIndex][n]) >> 4;
+      int32_t energy = ((int32_t)channelTempOutI[n] * channelTempOutI[n] + 
+                        (int32_t)channelTempOutQ[n] * channelTempOutQ[n]) >> 4;
       if (energy > maxEnergy) {
         maxEnergy = energy;
         bestIdx = n;
@@ -185,8 +196,8 @@ void ReceiverApp::performMatchedFiltering(int pulseIdx) {
     for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
       int n = center - (Constant::FFT_WINDOW_SIZE / 2) + k;
       if (n >= 0 && n < (int)Constant::ADC_SAMPLES) {
-        outI[k] = s_tempOutI[_receiverIndex][n];
-        outQ[k] = s_tempOutQ[_receiverIndex][n];
+        outI[k] = channelTempOutI[n];
+        outQ[k] = channelTempOutQ[n];
       } else {
         outI[k] = 0;
         outQ[k] = 0;
@@ -252,73 +263,69 @@ static uint32_t isqrt32(uint32_t n) {
 }
 
 void ReceiverApp::run() {
-  // Dynamically update matched filter coefficients if pulse type changed
   initDSPCoefficients();
 
-  // Capture the raw samples under lock
-  static uint16_t localRawSamples[Constant::ADC_SAMPLES];
-  taskENTER_CRITICAL(&_sharedData.spinlock);
-  memcpy(localRawSamples, (const void *)_adcBuffer,
-         sizeof(localRawSamples));
-  taskEXIT_CRITICAL(&_sharedData.spinlock);
+  int idx = (_receiverIndex >= 0 && _receiverIndex < 2) ? _receiverIndex : 0;
 
-  // 1. Digital DC Filter: compute the exact mean of the 2048 samples
+  // 1. Digital DC Filter: compute mean directly from _adcBuffer under lock
   int32_t sum = 0;
+  taskENTER_CRITICAL(&_sharedData.spinlock);
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    sum += localRawSamples[n];
+    sum += _adcBuffer[n];
   }
   int16_t mean = sum / (int)Constant::ADC_SAMPLES;
 
-  // 2. DC-filter the pulse to a local temp array and convert to Q15 by shifting left by 4 safely
-  static int16_t tempRaw[Constant::ADC_SAMPLES];
+  // 2. DC-filter into s_tempRaw
   for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    int32_t val = ((int32_t)localRawSamples[n] - mean) << 4;
-    tempRaw[n] = (int16_t)constrain(val, Constant::Q15_MIN, Constant::Q15_MAX);
+    int32_t val = ((int32_t)_adcBuffer[n] - mean) << 4;
+    s_tempRaw[n] = (int16_t)constrain(val, Constant::Q15_MIN, Constant::Q15_MAX);
   }
+  taskEXIT_CRITICAL(&_sharedData.spinlock);
 
   // Get current pulse index
   int pulseIdx = _sharedData.pulseIndex;
 
-  // 3. Process IQ Demodulation and Matched Filtering for the current pulse
-  performIQDemodulation(tempRaw);
+  // 3. Process IQ Demodulation and Matched Filtering for current pulse
+  performIQDemodulation(s_tempRaw);
   performMatchedFiltering(pulseIdx);
 
-  // Copy streaming values to localBuffer ONLY for Pulse 0 to save bandwidth
+  // Copy streaming values ONLY for Pulse 0
   if (pulseIdx == 0) {
     uint8_t mode = 0;
     taskENTER_CRITICAL(&_sharedData.spinlock);
     mode = _sharedData.streamMode;
     taskEXIT_CRITICAL(&_sharedData.spinlock);
 
-    static int16_t localBuffer[Constant::ADC_SAMPLES];
     if (mode == 0) { // STREAM_RAW
       for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-        localBuffer[n] = tempRaw[n];
+        s_localBuffer[idx][n] = s_tempRaw[n];
       }
     } else if (mode == 1) { // STREAM_DEMOD
-      performIQDemodulation(tempRaw);
+      performIQDemodulation(s_tempRaw);
       for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
         int32_t sqVal = (int32_t)_demodI[n] * _demodI[n] + (int32_t)_demodQ[n] * _demodQ[n];
-        localBuffer[n] = (int16_t)constrain(isqrt32(sqVal), 0, Constant::Q15_MAX);
+        s_localBuffer[idx][n] = (int16_t)constrain(isqrt32(sqVal), 0, Constant::Q15_MAX);
       }
     } else if (mode == 2) { // STREAM_COMPRESSED
+      int16_t* channelTempOutI = getChannelTempOutI(idx, _sharedData);
+      int16_t* channelTempOutQ = getChannelTempOutQ(idx, _sharedData);
       for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-        int32_t sqVal = (int32_t)s_tempOutI[_receiverIndex][n] * s_tempOutI[_receiverIndex][n] + 
-                          (int32_t)s_tempOutQ[_receiverIndex][n] * s_tempOutQ[_receiverIndex][n];
-        localBuffer[n] = (int16_t)constrain(isqrt32(sqVal >> 4), 0, Constant::Q15_MAX);
+        int32_t sqVal = (int32_t)channelTempOutI[n] * channelTempOutI[n] + 
+                          (int32_t)channelTempOutQ[n] * channelTempOutQ[n];
+        s_localBuffer[idx][n] = (int16_t)constrain(isqrt32(sqVal >> 4), 0, Constant::Q15_MAX);
       }
     }
 
-    // Copy localBuffer to old adcBuffer for general tracking
-    memcpy((void*)_adcBuffer, localBuffer, sizeof(localBuffer));
-
     if (_com != nullptr) {
-      _com->sendFrameAsync(_waveFrameId++, localBuffer, Constant::ADC_SAMPLES, _receiverIndex + 1); // receiverId = 1 or 2
+      _com->sendFrameAsync(_waveFrameId++, s_localBuffer[idx], Constant::ADC_SAMPLES, _receiverIndex + 1);
     }
   }
 
-  // Signal that this receiver is done processing the current pulse
+  // Signal completion
   taskENTER_CRITICAL(&_sharedData.spinlock);
   _sharedData.processingDone |= (1 << _receiverIndex);
   taskEXIT_CRITICAL(&_sharedData.spinlock);
 }
+
+
+

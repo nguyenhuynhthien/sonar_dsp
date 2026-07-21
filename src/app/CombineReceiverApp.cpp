@@ -33,27 +33,31 @@ static uint32_t isqrt32(uint32_t n) {
     return res;
 }
 
-extern int16_t s_tempOutI[2][Constant::ADC_SAMPLES];
-extern int16_t s_tempOutQ[2][Constant::ADC_SAMPLES];
-
 void CombineReceiverApp::sendSumWaveformFrame(int c) {
-    // We use the full Pulse 0 matched filter buffers s_tempOutI/Q
-    static int16_t sumBuffer[Constant::ADC_SAMPLES];
+    int16_t* lI_ptr = (int16_t*)&_sharedData.dsp_scratchpad[0][0];
+    int16_t* lQ_ptr = (int16_t*)&_sharedData.dsp_scratchpad[512][0];
+    int16_t* rI_ptr = (int16_t*)&_sharedData.dsp_scratchpad[1024][0];
+    int16_t* rQ_ptr = (int16_t*)&_sharedData.dsp_scratchpad[1536][0];
+
+    static int16_t s_sumBuffer[Constant::ADC_SAMPLES];
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-        int16_t lI = s_tempOutI[0][n];
-        int16_t lQ = s_tempOutQ[0][n];
-        int16_t rI = s_tempOutI[1][n];
-        int16_t rQ = s_tempOutQ[1][n];
+        int16_t lI = lI_ptr[n];
+        int16_t lQ = lQ_ptr[n];
+        int16_t rI = rI_ptr[n];
+        int16_t rQ = rQ_ptr[n];
         int32_t sqL = (int32_t)lI * lI + (int32_t)lQ * lQ;
         int32_t sqR = (int32_t)rI * rI + (int32_t)rQ * rQ;
-        sumBuffer[n] = (int16_t)constrain(isqrt32((sqL + sqR) >> 4), 0, Constant::Q15_MAX);
+        s_sumBuffer[n] = (int16_t)constrain(isqrt32((sqL + sqR) >> 4), 0, Constant::Q15_MAX);
     }
 
     if (_com != nullptr) {
         static uint16_t sumWaveFrameId = 0;
-        _com->sendFrameAsync(sumWaveFrameId++, sumBuffer, Constant::ADC_SAMPLES, 0); // receiverId = 0 (Sum Channel)
+        _com->sendFrameAsync(sumWaveFrameId++, s_sumBuffer, Constant::ADC_SAMPLES, 0); // receiverId = 0 (Sum Channel)
     }
 }
+
+
+
 
 void CombineReceiverApp::processTargetAndVelocity() {
     bool targetDetected = false;
@@ -119,8 +123,8 @@ void CombineReceiverApp::processTargetAndVelocity() {
         }
 
         // Run 16-point FFT using esp-dsp (8 data points + 8 zero padding)
-        // Complex float input/output: [Real, Imag, Real, Imag...] size = 16 * 2 = 32
-        static float fftBuffer[Constant::DOPPLER_FFT_LEN * 2] __attribute__((aligned(16)));
+        // Complex float input/output stored in shared dsp_scratchpad
+        float* fftBuffer = (float*)_sharedData.dsp_scratchpad;
         for (int i = 0; i < 8; ++i) {
             fftBuffer[i * 2 + 0] = (float)_sharedData.sharedFftReal[i];
             fftBuffer[i * 2 + 1] = (float)_sharedData.sharedFftImag[i];
@@ -135,6 +139,7 @@ void CombineReceiverApp::processTargetAndVelocity() {
         dsps_fft2r_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
         // Bit reverse to order output frequency bins
         dsps_bit_rev_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
+
 
         // Find peak frequency bin
         velocity_bin = 0;

@@ -7,14 +7,15 @@ ComManager::ComManager(const char *ssid, const char *password,
       _isServoEnabled(false), _streamMode(STREAM_RAW), _txGain(1.0f), 
       _isTxEnabled(false), _targetServoAngle(-1) {
   for (int i = 0; i < 3; ++i) {
-    _queuedFrames[i].samples = nullptr;
     _queuedFrames[i].ready = false;
   }
 }
 
+
 void ComManager::begin() {
   Serial.println("Starting WiFi STA mode...");
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
 
   // Connect to WiFi router
   WiFi.begin(_ssid, _password);
@@ -50,90 +51,83 @@ void ComManager::begin() {
   // Start UDP listening
   _udp.begin(_port);
   Serial.printf("UDP Listening on port %d\n", _port);
-
-  // Allocate dynamic buffers on the heap
-  for (int i = 0; i < 3; ++i) {
-    if (_queuedFrames[i].samples == nullptr) {
-      _queuedFrames[i].samples = (int16_t*)malloc(Constant::ADC_SAMPLES * sizeof(int16_t));
-    }
-  }
 }
+
 
 void ComManager::update() {
   int packetSize = _udp.parsePacket();
   if (packetSize > 0) {
-    char packetBuffer[Constant::UDP_BUFFER_SIZE];
-    int len = _udp.read(packetBuffer, sizeof(packetBuffer) - 1);
+    char command[Constant::UDP_BUFFER_SIZE];
+    int len = _udp.read(command, sizeof(command) - 1);
     if (len > 0) {
       _remoteIp = _udp.remoteIP();
       _remotePort = _udp.remotePort();
-      packetBuffer[len] = '\0';
-      String command = String(packetBuffer);
-      command.trim();
+      command[len] = '\0';
+      
+      // Trim trailing whitespace/newlines
+      while (len > 0 && (command[len - 1] == '\r' || command[len - 1] == '\n' || command[len - 1] == ' ')) {
+        command[--len] = '\0';
+      }
 
-      if (command == "start") {
-        // Send a tiny dummy packet immediately to trigger ARP resolution in
-        // lwIP
+      if (strcmp(command, "start") == 0) {
         _udp.beginPacket(_remoteIp, _remotePort);
         _udp.write((const uint8_t *)"ping", 4);
         _udp.endPacket();
 
-        // Wait for the router/MAC ARP table to resolve before starting
-        // high-speed stream
         delay(Constant::WIFI_ARP_DELAY_MS);
 
         _isStreaming = true;
         Serial.printf("Start streaming registered to %s:%d\n",
                       _remoteIp.toString().c_str(), _remotePort);
-      } else if (command == "stop") {
+      } else if (strcmp(command, "stop") == 0) {
         _isStreaming = false;
         Serial.println("Stop streaming registered.");
-      } else if (command == "cfg:single") {
+      } else if (strcmp(command, "cfg:single") == 0) {
         _pulseType = PULSE_SINGLE;
         Serial.println("Pulse config changed: Single");
-      } else if (command == "cfg:barker13") {
+      } else if (strcmp(command, "cfg:barker13") == 0) {
         _pulseType = PULSE_BARKER13;
         Serial.println("Pulse config changed: Barker13");
-      } else if (command == "servo:on") {
+      } else if (strcmp(command, "servo:on") == 0) {
         _isServoEnabled = true;
         Serial.println("Servo control enabled.");
-      } else if (command == "servo:off") {
+      } else if (strcmp(command, "servo:off") == 0) {
         _isServoEnabled = false;
         Serial.println("Servo control disabled.");
-      } else if (command == "mode:raw") {
+      } else if (strcmp(command, "mode:raw") == 0) {
         _streamMode = STREAM_RAW;
         Serial.println("Streaming mode: Raw Signal");
-      } else if (command == "mode:demod") {
+      } else if (strcmp(command, "mode:demod") == 0) {
         _streamMode = STREAM_DEMOD;
         Serial.println("Streaming mode: Demodulated");
-      } else if (command == "mode:compressed") {
+      } else if (strcmp(command, "mode:compressed") == 0) {
         _streamMode = STREAM_COMPRESSED;
         Serial.println("Streaming mode: Pulse Compressed");
-      } else if (command.startsWith("tx_atten:")) {
-        String valStr = command.substring(9);
-        if (valStr == "mute") {
+      } else if (strncmp(command, "tx_atten:", 9) == 0) {
+        const char *valStr = command + 9;
+        if (strcmp(valStr, "mute") == 0) {
           _txGain = 0.0f;
           Serial.println("Tx attenuation: Mute");
         } else {
-          int attenDb = valStr.toInt();
+          int attenDb = atoi(valStr);
           _txGain = powf(10.0f, -attenDb / 20.0f);
           Serial.printf("Tx attenuation: -%d dB (gain: %.4f)\n", attenDb, _txGain);
         }
-      } else if (command == "tx:on") {
+      } else if (strcmp(command, "tx:on") == 0) {
         _isTxEnabled = true;
         Serial.println("Tx Enabled");
-      } else if (command == "tx:off") {
+      } else if (strcmp(command, "tx:off") == 0) {
         _isTxEnabled = false;
         Serial.println("Tx Disabled");
-      } else if (command.startsWith("servo:")) {
-        if (command == "servo:on") {
+      } else if (strncmp(command, "servo:", 6) == 0) {
+        if (strcmp(command, "servo:on") == 0) {
           _isServoEnabled = true;
           Serial.println("Servo control enabled.");
-        } else if (command == "servo:off") {
+        } else if (strcmp(command, "servo:off") == 0) {
           _isServoEnabled = false;
           Serial.println("Servo control disabled.");
         } else {
-          int angle = command.substring(6).toInt();
+          int angle = atoi(command + 6);
           if (angle >= 0 && angle <= 180) {
             _targetServoAngle = angle;
             Serial.printf("Servo command: Move to %d degrees\n", angle);
@@ -216,19 +210,19 @@ void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t
   }
   // Determine queue slot based on receiverId (Rx0 Sum -> slot 2, Rx1 -> slot 0, Rx2 -> slot 1)
   int slot = (receiverId == 0) ? 2 : (receiverId - 1);
-  if (_queuedFrames[slot].samples == nullptr) return;
   if (_queuedFrames[slot].ready) return; // Drop frame if previous one is still sending to avoid corruption
 
   _queuedFrames[slot].frameId = frameId;
   _queuedFrames[slot].receiverId = receiverId;
-  memcpy(_queuedFrames[slot].samples, samples, Constant::ADC_SAMPLES * sizeof(int16_t));
+  _queuedFrames[slot].samples = samples;
   _queuedFrames[slot].ready = true;
 }
+
 
 bool ComManager::processAsyncSends() {
   bool sentAny = false;
   for (int i = 0; i < 3; ++i) {
-    if (_queuedFrames[i].ready && _queuedFrames[i].samples != nullptr) {
+    if (_queuedFrames[i].ready) {
       sendFrame(_queuedFrames[i].frameId, _queuedFrames[i].samples, Constant::ADC_SAMPLES, _queuedFrames[i].receiverId);
       _queuedFrames[i].ready = false;
       sentAny = true;
@@ -238,3 +232,4 @@ bool ComManager::processAsyncSends() {
   }
   return sentAny;
 }
+
