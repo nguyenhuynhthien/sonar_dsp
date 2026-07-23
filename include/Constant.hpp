@@ -187,6 +187,25 @@ constexpr uint32_t TASK_PRIORITY = 10;
 
 // Delay in milliseconds at the end of execution loops (Value: 1000)
 constexpr uint32_t LOOP_DELAY_MS = 1000;
+
+// --- Target Physical Parameters & Calculations ---
+// ADC reference voltage in Volts (Value: 3.3f)
+constexpr float ADC_REF_VOLTS = 3.3f;
+
+// Gain restoration factor to scale Q15 amplitude values (Value: 1024.0f)
+constexpr float GAIN_RESTORATION_FACTOR = 1024.0f;
+
+// Minimum amplitude limit to prevent log10(0) domain errors (Value: 1.0f)
+constexpr float MIN_AMPLITUDE_LIMIT = 1.0f;
+
+// Logarithmic multiplier to scale voltage ratios to decibel levels (Value: 20.0f)
+constexpr float DB_SCALE_FACTOR = 20.0f;
+
+// Factor representing two-way signal travel path (out and back) (Value: 2.0f)
+constexpr float ROUND_TRIP_FACTOR = 2.0f;
+
+// Pulse repetition interval in seconds, converted from milliseconds (Value: 0.03f)
+constexpr float PRI_SECONDS = static_cast<float>(PRI_SINGLE_MS) / 1000.0f;
 } // namespace Constant
 
 #endif // CONSTANT_HPP

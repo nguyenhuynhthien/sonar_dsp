@@ -27,7 +27,7 @@ public:
     bool isStreaming();
     void sendFrame(uint16_t frameId, const int16_t* samples, size_t size, uint8_t receiverId);
     void sendAngle(uint16_t angle);
-    void sendTarget(int32_t rangeBin, uint16_t angle, int32_t amplitude, int32_t velocityBin, uint8_t receiverId);
+    void sendTarget(float range, uint16_t angle, float strength, float velocity, uint8_t receiverId);
     void sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t size, uint8_t receiverId);
     bool processAsyncSends();
     PulseType getPulseType() const { return _pulseType; }

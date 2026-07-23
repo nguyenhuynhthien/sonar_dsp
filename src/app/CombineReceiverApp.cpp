@@ -153,7 +153,23 @@ void CombineReceiverApp::processTargetAndVelocity() {
         if (targetDetected && bestIdx != -1) {
             uint16_t angleToSend = currentAngle;
             if (!isCCW) angleToSend |= 0x8000;
-            _com->sendTarget(bestIdx, angleToSend, cleanRawMag, velocity_bin, 0); // receiverId = 0 (Sum Channel)
+
+            // 1. Convert range bin to meters
+            int tof_idx = bestIdx - filterLen;
+            if (tof_idx < 0) tof_idx = 0;
+            float t_range = ((float)tof_idx * Constant::SPEED_OF_SOUND) / (Constant::ROUND_TRIP_FACTOR * (float)Constant::SAMPLE_RATE);
+
+            // 2. Scale Q15 amplitude and convert to dB
+            float raw_strength = (float)cleanRawMag * Constant::GAIN_RESTORATION_FACTOR;
+            if (raw_strength < Constant::MIN_AMPLITUDE_LIMIT) raw_strength = Constant::MIN_AMPLITUDE_LIMIT;
+            float t_strength = Constant::DB_SCALE_FACTOR * log10f(raw_strength / (float)Constant::ADC_RESOLUTION_MAX * Constant::ADC_REF_VOLTS);
+
+            // 3. Convert doppler bin to velocity
+            float delta_f = 1.0f / ((float)Constant::DOPPLER_FFT_LEN * Constant::PRI_SECONDS);
+            float fd = (float)velocity_bin * delta_f;
+            float t_velocity = -fd * Constant::SPEED_OF_SOUND / (Constant::ROUND_TRIP_FACTOR * (float)Constant::CENTER_FREQ);
+
+            _com->sendTarget(t_range, angleToSend, t_strength, t_velocity, 0); // receiverId = 0 (Sum Channel)
         }
     }
 }
