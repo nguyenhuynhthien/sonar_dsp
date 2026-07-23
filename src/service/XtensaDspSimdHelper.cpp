@@ -104,3 +104,174 @@ void fft8_q15_simd(const Complex16* in, Complex16* out) {
     pOut[6] = AE_MOVDA16(u2_im + u6_re, u2_re - u6_im); // u2 + j*u6
     pOut[7] = AE_SUB16(u3, w3_u7);
 }
+
+// 16-point float FFT, unrolled
+void fft16_float_unrolled(const ComplexFloat* in, ComplexFloat* out) {
+    // 1. Bit-reversal copy
+    out[0]  = in[0];
+    out[1]  = in[8];
+    out[2]  = in[4];
+    out[3]  = in[12];
+    out[4]  = in[2];
+    out[5]  = in[10];
+    out[6]  = in[6];
+    out[7]  = in[14];
+    out[8]  = in[1];
+    out[9]  = in[9];
+    out[10] = in[5];
+    out[11] = in[13];
+    out[12] = in[3];
+    out[13] = in[11];
+    out[14] = in[7];
+    out[15] = in[15];
+
+    // Stage 1: subgroups of size 2 (twiddle factor W_2^0 = 1)
+    for (int i = 0; i < 16; i += 2) {
+        ComplexFloat temp = out[i + 1];
+        out[i + 1].re = out[i].re - temp.re;
+        out[i + 1].im = out[i].im - temp.im;
+        out[i].re     = out[i].re + temp.re;
+        out[i].im     = out[i].im + temp.im;
+    }
+
+    // Stage 2: subgroups of size 4 (twiddle factors: W_4^0 = 1, W_4^1 = -j)
+    for (int i = 0; i < 16; i += 4) {
+        // k = 0
+        ComplexFloat temp0 = out[i + 2];
+        out[i + 2].re = out[i].re - temp0.re;
+        out[i + 2].im = out[i].im - temp0.im;
+        out[i].re     = out[i].re + temp0.re;
+        out[i].im     = out[i].im + temp0.im;
+
+        // k = 1: multiply out[i+3] by -j
+        ComplexFloat temp1 = out[i + 3];
+        float t1_re = temp1.im;
+        float t1_im = -temp1.re;
+        out[i + 3].re = out[i + 1].re - t1_re;
+        out[i + 3].im = out[i + 1].im - t1_im;
+        out[i + 1].re = out[i + 1].re + t1_re;
+        out[i + 1].im = out[i + 1].im + t1_im;
+    }
+
+    // Stage 3: subgroups of size 8 (twiddle factors: W_8^k)
+    const float C8 = 0.70710678f;
+    for (int i = 0; i < 16; i += 8) {
+        // k = 0
+        ComplexFloat temp0 = out[i + 4];
+        out[i + 4].re = out[i].re - temp0.re;
+        out[i + 4].im = out[i].im - temp0.im;
+        out[i].re     = out[i].re + temp0.re;
+        out[i].im     = out[i].im + temp0.im;
+
+        // k = 1: multiply by C8 - j*C8
+        ComplexFloat temp1 = out[i + 5];
+        float t1_re = C8 * (temp1.re + temp1.im);
+        float t1_im = C8 * (temp1.im - temp1.re);
+        out[i + 5].re = out[i + 1].re - t1_re;
+        out[i + 5].im = out[i + 1].im - t1_im;
+        out[i + 1].re = out[i + 1].re + t1_re;
+        out[i + 1].im = out[i + 1].im + t1_im;
+
+        // k = 2: multiply by -j
+        ComplexFloat temp2 = out[i + 6];
+        float t2_re = temp2.im;
+        float t2_im = -temp2.re;
+        out[i + 6].re = out[i + 2].re - t2_re;
+        out[i + 6].im = out[i + 2].im - t2_im;
+        out[i + 2].re = out[i + 2].re + t2_re;
+        out[i + 2].im = out[i + 2].im + t2_im;
+
+        // k = 3: multiply by -C8 - j*C8
+        ComplexFloat temp3 = out[i + 7];
+        float t3_re = C8 * (-temp3.re + temp3.im);
+        float t3_im = C8 * (-temp3.im - temp3.re);
+        out[i + 7].re = out[i + 3].re - t3_re;
+        out[i + 7].im = out[i + 3].im - t3_im;
+        out[i + 3].re = out[i + 3].re + t3_re;
+        out[i + 3].im = out[i + 3].im + t3_im;
+    }
+
+    // Stage 4: subgroups of size 16 (twiddle factors: W_16^k)
+    const float C16_1_C = 0.92387953f, C16_1_S = 0.38268343f;
+    const float C16_3_C = 0.38268343f, C16_3_S = 0.92387953f;
+
+    // k = 0
+    {
+        ComplexFloat t = out[8];
+        out[8].re = out[0].re - t.re;
+        out[8].im = out[0].im - t.im;
+        out[0].re = out[0].re + t.re;
+        out[0].im = out[0].im + t.im;
+    }
+    // k = 1
+    {
+        ComplexFloat t = out[9];
+        float tr = t.re * C16_1_C + t.im * C16_1_S;
+        float ti = t.im * C16_1_C - t.re * C16_1_S;
+        out[9].re = out[1].re - tr;
+        out[9].im = out[1].im - ti;
+        out[1].re = out[1].re + tr;
+        out[1].im = out[1].im + ti;
+    }
+    // k = 2
+    {
+        ComplexFloat t = out[10];
+        float tr = C8 * (t.re + t.im);
+        float ti = C8 * (t.im - t.re);
+        out[10].re = out[2].re - tr;
+        out[10].im = out[2].im - ti;
+        out[2].re = out[2].re + tr;
+        out[2].im = out[2].im + ti;
+    }
+    // k = 3
+    {
+        ComplexFloat t = out[11];
+        float tr = t.re * C16_3_C + t.im * C16_3_S;
+        float ti = t.im * C16_3_C - t.re * C16_3_S;
+        out[11].re = out[3].re - tr;
+        out[11].im = out[3].im - ti;
+        out[3].re = out[3].re + tr;
+        out[3].im = out[3].im + ti;
+    }
+    // k = 4
+    {
+        ComplexFloat t = out[12];
+        float tr = t.im;
+        float ti = -t.re;
+        out[12].re = out[4].re - tr;
+        out[12].im = out[4].im - ti;
+        out[4].re = out[4].re + tr;
+        out[4].im = out[4].im + ti;
+    }
+    // k = 5
+    {
+        ComplexFloat t = out[13];
+        float tr = -t.re * C16_3_C + t.im * C16_3_S;
+        float ti = -t.im * C16_3_C - t.re * C16_3_S;
+        out[13].re = out[5].re - tr;
+        out[13].im = out[5].im - ti;
+        out[5].re = out[5].re + tr;
+        out[5].im = out[5].im + ti;
+    }
+    // k = 6
+    {
+        ComplexFloat t = out[14];
+        float tr = C8 * (-t.re + t.im);
+        float ti = C8 * (-t.im - t.re);
+        out[14].re = out[6].re - tr;
+        out[14].im = out[6].im - ti;
+        out[6].re = out[6].re + tr;
+        out[6].im = out[6].im + ti;
+    }
+    // k = 7
+    {
+        ComplexFloat t = out[15];
+        float tr = -t.re * C16_1_C + t.im * C16_1_S;
+        float ti = -t.im * C16_1_C - t.re * C16_1_S;
+        out[15].re = out[7].re - tr;
+        out[15].im = out[7].im - ti;
+        out[7].re = out[7].re + tr;
+        out[7].im = out[7].im + ti;
+    }
+}
+

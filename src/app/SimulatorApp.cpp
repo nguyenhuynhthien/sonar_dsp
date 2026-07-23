@@ -109,14 +109,19 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
     float cosTheta = 1.0f;
     float sinTheta = 0.0f;
     if (activeIndex != -1) {
-        float fd = 0.0f;
+        float PRI = (float)_sharedData.txPeriodMs / 1000.0f;
+        float delta_f = 1.0f / ((float)Constant::DOPPLER_FFT_LEN * PRI);
+        float v_desired = 0.0f;
         if (activeIndex == 0) {
-            fd = -8.33f;  // Bin -4 -> v = +0.036 m/s
+            v_desired = 0.04f;
         } else if (activeIndex == 1) {
-            fd = 4.17f;   // Bin +2 -> v = -0.018 m/s
+            v_desired = -0.02f;
         } else if (activeIndex == 2) {
-            fd = -4.17f;  // Bin -2 -> v = +0.018 m/s
+            v_desired = 0.02f;
         }
+
+        // Calculate ideal Doppler shift for desired target physical velocity
+        float fd = -v_desired * Constant::ROUND_TRIP_FACTOR * (float)Constant::CENTER_FREQ / Constant::SPEED_OF_SOUND;
         
         int p = 0;
         taskENTER_CRITICAL(&_sharedData.spinlock);
@@ -131,7 +136,6 @@ void SimulatorApp::fillSimulatorBuffer(uint8_t* buffer, size_t size, const uint8
                 size_t pulseIdx = i - simDelay;
                 
                 float fs = (float)Constant::SAMPLE_RATE;
-                float PRI = (float)_sharedData.txPeriodMs / 1000.0f;
                 
                 // Absolute time: t = time within the ADC buffer
                 float t = (float)i / fs;

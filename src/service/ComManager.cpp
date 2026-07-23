@@ -4,13 +4,12 @@ ComManager::ComManager(const char *ssid, const char *password,
                        const char *hostName, uint16_t port)
     : _ssid(ssid), _password(password), _hostName(hostName), _port(port),
       _remotePort(0), _isStreaming(false), _pulseType(PULSE_SINGLE),
-      _isServoEnabled(false), _streamMode(STREAM_RAW), _txGain(1.0f), 
+      _isServoEnabled(false), _streamMode(STREAM_RAW), _txGain(1.0f),
       _isTxEnabled(false), _targetServoAngle(-1) {
   for (int i = 0; i < 3; ++i) {
     _queuedFrames[i].ready = false;
   }
 }
-
 
 void ComManager::begin() {
   Serial.println("Starting WiFi STA mode...");
@@ -53,7 +52,6 @@ void ComManager::begin() {
   Serial.printf("UDP Listening on port %d\n", _port);
 }
 
-
 void ComManager::update() {
   int packetSize = _udp.parsePacket();
   if (packetSize > 0) {
@@ -63,9 +61,10 @@ void ComManager::update() {
       _remoteIp = _udp.remoteIP();
       _remotePort = _udp.remotePort();
       command[len] = '\0';
-      
+
       // Trim trailing whitespace/newlines
-      while (len > 0 && (command[len - 1] == '\r' || command[len - 1] == '\n' || command[len - 1] == ' ')) {
+      while (len > 0 && (command[len - 1] == '\r' || command[len - 1] == '\n' ||
+                         command[len - 1] == ' ')) {
         command[--len] = '\0';
       }
 
@@ -111,7 +110,8 @@ void ComManager::update() {
         } else {
           int attenDb = atoi(valStr);
           _txGain = powf(10.0f, -attenDb / 20.0f);
-          Serial.printf("Tx attenuation: -%d dB (gain: %.4f)\n", attenDb, _txGain);
+          Serial.printf("Tx attenuation: -%d dB (gain: %.4f)\n", attenDb,
+                        _txGain);
         }
       } else if (strcmp(command, "tx:on") == 0) {
         _isTxEnabled = true;
@@ -196,21 +196,24 @@ void ComManager::sendTarget(float range, uint16_t angle, float strength,
     return;
   }
   char buf[64];
-  int len = snprintf(buf, sizeof(buf), "target:%.4f,%u,%.2f,%.4f,%u", range, angle,
-                     strength, velocity, receiverId);
+  int len = snprintf(buf, sizeof(buf), "target:%.4f,%u,%.2f,%.4f,%u", range,
+                     angle, strength, velocity, receiverId);
 
   _udp.beginPacket(_remoteIp, _remotePort);
   _udp.write((const uint8_t *)buf, len);
   _udp.endPacket();
 }
 
-void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t size, uint8_t receiverId) {
+void ComManager::sendFrameAsync(uint16_t frameId, const int16_t *samples,
+                                size_t size, uint8_t receiverId) {
   if (!_isStreaming || size != Constant::ADC_SAMPLES) {
     return;
   }
-  // Determine queue slot based on receiverId (Rx0 Sum -> slot 2, Rx1 -> slot 0, Rx2 -> slot 1)
+  // Determine queue slot based on receiverId (Rx0 Sum -> slot 2, Rx1 -> slot 0,
+  // Rx2 -> slot 1)
   int slot = (receiverId == 0) ? 2 : (receiverId - 1);
-  if (_queuedFrames[slot].ready) return; // Drop frame if previous one is still sending to avoid corruption
+  if (_queuedFrames[slot].ready)
+    return; // Drop frame if previous one is still sending to avoid corruption
 
   _queuedFrames[slot].frameId = frameId;
   _queuedFrames[slot].receiverId = receiverId;
@@ -218,12 +221,12 @@ void ComManager::sendFrameAsync(uint16_t frameId, const int16_t* samples, size_t
   _queuedFrames[slot].ready = true;
 }
 
-
 bool ComManager::processAsyncSends() {
   bool sentAny = false;
   for (int i = 0; i < 3; ++i) {
     if (_queuedFrames[i].ready) {
-      sendFrame(_queuedFrames[i].frameId, _queuedFrames[i].samples, Constant::ADC_SAMPLES, _queuedFrames[i].receiverId);
+      sendFrame(_queuedFrames[i].frameId, _queuedFrames[i].samples,
+                Constant::ADC_SAMPLES, _queuedFrames[i].receiverId);
       _queuedFrames[i].ready = false;
       sentAny = true;
       // Yield to let the WiFi stack process and prevent LwIP lockup
@@ -232,4 +235,3 @@ bool ComManager::processAsyncSends() {
   }
   return sentAny;
 }
-

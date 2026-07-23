@@ -141,11 +141,11 @@ constexpr int SERVO_STEP_DEG = 10;
 // Delay in milliseconds when the transmitter is in an idle state (Value: 20)
 constexpr uint32_t TX_IDLE_DELAY_MS = 20;
 
-// Pulse Repetition Interval (PRI) in milliseconds for single pulse mode (Value: 30)
-constexpr uint32_t PRI_SINGLE_MS = 30;
+// Pulse Repetition Interval (PRI) in milliseconds for single pulse mode (Value: 15)
+constexpr uint32_t PRI_SINGLE_MS = 15;
 
-// Pulse Repetition Interval (PRI) in milliseconds for Barker 13 mode (Value: 30)
-constexpr uint32_t PRI_BARKER13_MS = 30;
+// Pulse Repetition Interval (PRI) in milliseconds for Barker 13 mode (Value: 20)
+constexpr uint32_t PRI_BARKER13_MS = 20;
 
 // Busy wait time in microseconds during transmissions (Value: 100)
 constexpr uint32_t TX_BUSY_WAIT_US = 100;

@@ -28,8 +28,14 @@ ae_int16x2 AE_ADD16(ae_int16x2 a, ae_int16x2 b);
 ae_int16x2 AE_SUB16(ae_int16x2 a, ae_int16x2 b);
 #endif
 
+struct ComplexFloat {
+    float re;
+    float im;
+};
+
 // Reusable function declarations
 esp_err_t dsps_conv_q15(const int16_t *Signal, const int siglen, const int16_t *Kernel, const int kernlen, int16_t *convout);
 void fft8_q15_simd(const Complex16* in, Complex16* out);
+void fft16_float_unrolled(const ComplexFloat* in, ComplexFloat* out);
 
 #endif // XTENSA_DSP_SIMD_HELPER_H

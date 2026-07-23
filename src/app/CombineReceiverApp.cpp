@@ -4,13 +4,10 @@
 #include <esp_dsp.h>
 #include "../service/XtensaDspSimdHelper.h"
 
-
-
 CombineReceiverApp::CombineReceiverApp(SharedSonarData& sharedData)
     : _sharedData(sharedData) {}
 
 void CombineReceiverApp::begin() {
-    // Không cần khởi tạo dsps_fft2r vì đã chuyển sang dùng fft8_q15_simd tối ưu
 }
 
 // Fast integer square root helper
@@ -44,6 +41,7 @@ void CombineReceiverApp::processTargetAndVelocity() {
     int bestIdx = -1;
     int32_t maxAcc = 0;
     int32_t velocity_bin = 0;
+    float velocity_bin_frac = 0.0f;
     int32_t cleanRawMag = 0;
 
     // 1. Compute 8-pulse accumulated Sum magnitude across all 2048 samples (scaled >> 1 to fit int16_t Q15 range without peak clipping)
@@ -57,9 +55,6 @@ void CombineReceiverApp::processTargetAndVelocity() {
         }
         _sharedData.sumAccumulator[n] = (int16_t)constrain(totalMag >> 1, 0, Constant::Q15_MAX);
     }
-
-
-
 
     // 2. Find peak index across all 2048 samples (ignoring TX blanking region)
     for (int n = Constant::TX_LEAKAGE_BLANK_SAMPLES; n < (int)Constant::ADC_SAMPLES; ++n) {
@@ -94,36 +89,38 @@ void CombineReceiverApp::processTargetAndVelocity() {
         }
     }
 
-
-
     if (targetDetected && bestIdx != -1) {
-        int64_t maxFftMagSq = -1;
+        float maxFftMagSq = -1.0f;
         int peakRangeBin = bestIdx;
         velocity_bin = 0;
 
         int windowStart = bestIdx - (Constant::FFT_WINDOW_SIZE / 2);
-        Complex16* fftIn = (Complex16*)_sharedData.dsp_scratchpad;
-        Complex16* fftOut = fftIn + 8;
+        ComplexFloat fftIn[16];
+        ComplexFloat fftOut[16];
 
-        // Perform 8-point Doppler FFT across all 15 range bins centered around bestIdx
+        // Perform 16-point Doppler FFT (with 8-zero padding) across all 15 range bins centered around bestIdx
         for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
             int rangeBin = windowStart + k;
             if (rangeBin < 0 || rangeBin >= (int)Constant::ADC_SAMPLES) continue;
 
-            // Load 8 complex samples from matrixSum_I/Q for current range bin
+            // Load 8 complex samples and pad 8 zeros
             for (int p = 0; p < 8; ++p) {
-                fftIn[p].re = _sharedData.matrixSum_I[p][rangeBin];
-                fftIn[p].im = _sharedData.matrixSum_Q[p][rangeBin];
+                fftIn[p].re = (float)_sharedData.matrixSum_I[p][rangeBin];
+                fftIn[p].im = (float)_sharedData.matrixSum_Q[p][rangeBin];
+            }
+            for (int p = 8; p < 16; ++p) {
+                fftIn[p].re = 0.0f;
+                fftIn[p].im = 0.0f;
             }
 
-            // Run complex Q15 SIMD FFT
-            fft8_q15_simd(fftIn, fftOut);
+            // Run 16-point unrolled float FFT
+            fft16_float_unrolled(fftIn, fftOut);
 
-            // Search peak Doppler frequency bin across this range bin
-            for (int f = 0; f < 8; ++f) {
-                int32_t re = fftOut[f].re;
-                int32_t im = fftOut[f].im;
-                int64_t magSq = (int64_t)re * re + (int64_t)im * im;
+            // Search peak Doppler frequency bin across this range bin (length 16)
+            for (int f = 0; f < 16; ++f) {
+                float re = fftOut[f].re;
+                float im = fftOut[f].im;
+                float magSq = re * re + im * im;
                 if (magSq > maxFftMagSq) {
                     maxFftMagSq = magSq;
                     velocity_bin = f;
@@ -132,14 +129,41 @@ void CombineReceiverApp::processTargetAndVelocity() {
             }
         }
 
-        if (velocity_bin >= 4) {
-            velocity_bin -= 8;
+        // Re-run FFT at the peak range bin to perform quadratic peak interpolation
+        for (int p = 0; p < 8; ++p) {
+            fftIn[p].re = (float)_sharedData.matrixSum_I[p][peakRangeBin];
+            fftIn[p].im = (float)_sharedData.matrixSum_Q[p][peakRangeBin];
+        }
+        for (int p = 8; p < 16; ++p) {
+            fftIn[p].re = 0.0f;
+            fftIn[p].im = 0.0f;
+        }
+        fft16_float_unrolled(fftIn, fftOut);
+
+        int f_peak = velocity_bin;
+        int f_prev = (f_peak - 1 + 16) % 16;
+        int f_next = (f_peak + 1) % 16;
+        float y0 = sqrtf(fftOut[f_prev].re * fftOut[f_prev].re + fftOut[f_prev].im * fftOut[f_prev].im);
+        float y1 = sqrtf(fftOut[f_peak].re * fftOut[f_peak].re + fftOut[f_peak].im * fftOut[f_peak].im);
+        float y2 = sqrtf(fftOut[f_next].re * fftOut[f_next].re + fftOut[f_next].im * fftOut[f_next].im);
+
+        int bin_centered = velocity_bin;
+        if (bin_centered >= 8) {
+            bin_centered -= 16;
         }
 
-        cleanRawMag = (int32_t)isqrt32((uint32_t)maxFftMagSq);
+        float d = 0.0f;
+        float denominator = 2.0f * y1 - y0 - y2;
+        if (denominator > 1e-3f) {
+            d = 0.5f * (y2 - y0) / denominator;
+            if (d < -0.5f) d = -0.5f;
+            if (d > 0.5f) d = 0.5f;
+        }
+        velocity_bin_frac = (float)bin_centered + d;
+
+        cleanRawMag = (int32_t)sqrtf(maxFftMagSq);
         bestIdx = peakRangeBin;
     }
-
 
     // Send target details to SonarViewer
     if (_com != nullptr) {
@@ -165,8 +189,9 @@ void CombineReceiverApp::processTargetAndVelocity() {
             float t_strength = Constant::DB_SCALE_FACTOR * log10f(raw_strength / (float)Constant::ADC_RESOLUTION_MAX * Constant::ADC_REF_VOLTS);
 
             // 3. Convert doppler bin to velocity
-            float delta_f = 1.0f / ((float)Constant::DOPPLER_FFT_LEN * Constant::PRI_SECONDS);
-            float fd = (float)velocity_bin * delta_f;
+            float pri_seconds = (float)_sharedData.txPeriodMs / 1000.0f;
+            float delta_f = 1.0f / (16.0f * pri_seconds);
+            float fd = velocity_bin_frac * delta_f;
             float t_velocity = -fd * Constant::SPEED_OF_SOUND / (Constant::ROUND_TRIP_FACTOR * (float)Constant::CENTER_FREQ);
 
             _com->sendTarget(t_range, angleToSend, t_strength, t_velocity, 0); // receiverId = 0 (Sum Channel)
@@ -207,7 +232,3 @@ void CombineReceiverApp::run() {
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     }
 }
-
-
-
-
