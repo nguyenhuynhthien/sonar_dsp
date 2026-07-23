@@ -41,11 +41,6 @@ struct SharedSonarData {
     volatile bool stepComplete;
 
     // Waveform and velocity synchronization variables
-    int16_t waveSendBuffer[Constant::ADC_SAMPLES];
-    volatile uint16_t waveSendAngle;
-    volatile bool waveSendReady;
-    volatile int peakIndexForVelocity;
-    volatile bool velocityRequested;
     volatile int pulseIndex;
     volatile uint32_t txPeriodMs;
 
@@ -70,9 +65,6 @@ struct SharedSonarData {
 
     // Shared variables for Sum-channel Peak detection and FFT
     int sharedPeakIdx;
-    volatile int sharedWindowCenterIdx;
-    int16_t sharedFftReal[Constant::DOPPLER_FFT_LEN];
-    int16_t sharedFftImag[Constant::DOPPLER_FFT_LEN];
 };
 
 

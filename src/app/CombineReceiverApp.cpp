@@ -2,16 +2,15 @@
 #include <Constant.hpp>
 #include <math.h>
 #include <esp_dsp.h>
+#include "../service/XtensaDspSimdHelper.h"
+
+
 
 CombineReceiverApp::CombineReceiverApp(SharedSonarData& sharedData)
     : _sharedData(sharedData) {}
 
 void CombineReceiverApp::begin() {
-    // Initialize esp-dsp Radix-2 FFT library for 16-point complex float calculations
-    esp_err_t err = dsps_fft2r_init_fc32(NULL, Constant::DOPPLER_FFT_LEN);
-    if (err != ESP_OK) {
-        Serial.println("Error: Failed to initialize esp-dsp FFT!");
-    }
+    // Không cần khởi tạo dsps_fft2r vì đã chuyển sang dùng fft8_q15_simd tối ưu
 }
 
 // Fast integer square root helper
@@ -98,12 +97,13 @@ void CombineReceiverApp::processTargetAndVelocity() {
 
 
     if (targetDetected && bestIdx != -1) {
-        float maxFftMagSq = -1.0f;
+        int64_t maxFftMagSq = -1;
         int peakRangeBin = bestIdx;
         velocity_bin = 0;
 
         int windowStart = bestIdx - (Constant::FFT_WINDOW_SIZE / 2);
-        float* fftBuffer = (float*)_sharedData.dsp_scratchpad;
+        Complex16* fftIn = (Complex16*)_sharedData.dsp_scratchpad;
+        Complex16* fftOut = fftIn + 8;
 
         // Perform 8-point Doppler FFT across all 15 range bins centered around bestIdx
         for (int k = 0; k < Constant::FFT_WINDOW_SIZE; ++k) {
@@ -112,24 +112,18 @@ void CombineReceiverApp::processTargetAndVelocity() {
 
             // Load 8 complex samples from matrixSum_I/Q for current range bin
             for (int p = 0; p < 8; ++p) {
-                fftBuffer[p * 2 + 0] = (float)_sharedData.matrixSum_I[p][rangeBin];
-                fftBuffer[p * 2 + 1] = (float)_sharedData.matrixSum_Q[p][rangeBin];
-            }
-            // Zero padding from index 8 to 15
-            for (int p = 8; p < (int)Constant::DOPPLER_FFT_LEN; ++p) {
-                fftBuffer[p * 2 + 0] = 0.0f;
-                fftBuffer[p * 2 + 1] = 0.0f;
+                fftIn[p].re = _sharedData.matrixSum_I[p][rangeBin];
+                fftIn[p].im = _sharedData.matrixSum_Q[p][rangeBin];
             }
 
-            // Run complex FFT
-            dsps_fft2r_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
-            dsps_bit_rev_fc32(fftBuffer, Constant::DOPPLER_FFT_LEN);
+            // Run complex Q15 SIMD FFT
+            fft8_q15_simd(fftIn, fftOut);
 
             // Search peak Doppler frequency bin across this range bin
-            for (int f = 0; f < (int)Constant::DOPPLER_FFT_LEN; ++f) {
-                float re = fftBuffer[f * 2 + 0];
-                float im = fftBuffer[f * 2 + 1];
-                float magSq = re * re + im * im;
+            for (int f = 0; f < 8; ++f) {
+                int32_t re = fftOut[f].re;
+                int32_t im = fftOut[f].im;
+                int64_t magSq = (int64_t)re * re + (int64_t)im * im;
                 if (magSq > maxFftMagSq) {
                     maxFftMagSq = magSq;
                     velocity_bin = f;
@@ -138,11 +132,11 @@ void CombineReceiverApp::processTargetAndVelocity() {
             }
         }
 
-        if (velocity_bin >= (int)Constant::DOPPLER_FFT_LEN / 2) {
-            velocity_bin -= (int)Constant::DOPPLER_FFT_LEN;
+        if (velocity_bin >= 4) {
+            velocity_bin -= 8;
         }
 
-        cleanRawMag = (int32_t)sqrtf(maxFftMagSq);
+        cleanRawMag = (int32_t)isqrt32((uint32_t)maxFftMagSq);
         bestIdx = peakRangeBin;
     }
 

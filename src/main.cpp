@@ -35,11 +35,6 @@ SharedSonarData sharedData = {
     .accumulatedDataReady = false,
     .requestServoStep = false,
     .stepComplete = false,
-    .waveSendBuffer = {0},
-    .waveSendAngle = 0,
-    .waveSendReady = false,
-    .peakIndexForVelocity = -1,
-    .velocityRequested = false,
     .pulseIndex = 0,
     .txPeriodMs = 30,
     .matrixSum_I = {nullptr},
@@ -50,8 +45,7 @@ SharedSonarData sharedData = {
     .sharedDemodI = {0},
     .sharedDemodQ = {0},
     .dsp_scratchpad = {{0.0f}},
-    .sharedPeakIdx = 0,
-    .sharedWindowCenterIdx = 0
+    .sharedPeakIdx = 0
 };
 
 // WiFi SSID, password and MDNS hostname

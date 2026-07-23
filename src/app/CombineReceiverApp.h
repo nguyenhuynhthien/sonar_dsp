@@ -3,6 +3,7 @@
 
 #include <SharedSonarData.h>
 #include "../service/ComManager.h"
+#include "../service/XtensaDspSimdHelper.h"
 
 class CombineReceiverApp {
 public:

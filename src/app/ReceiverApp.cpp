@@ -4,21 +4,9 @@
 #include "../service/SyncSignalService.h"
 #include <math.h>
 #include <esp_dsp.h>
+#include "../service/XtensaDspSimdHelper.h"
 
-// Custom Q15 convolution implementation
-static esp_err_t dsps_conv_q15(const int16_t *Signal, const int siglen, const int16_t *Kernel, const int kernlen, int16_t *convout) {
-    int out_len = siglen + kernlen - 1;
-    for (int n = 0; n < out_len; ++n) {
-        int32_t sum = 0;
-        int k_start = (n >= siglen) ? (n - siglen + 1) : 0;
-        int k_end = (n < kernlen) ? n : (kernlen - 1);
-        for (int k = k_start; k <= k_end; ++k) {
-            sum += ((int32_t)Signal[n - k] * Kernel[k] + 16384) >> 15;
-        }
-        convout[n] = (int16_t)constrain(sum, -32768, 32767);
-    }
-    return ESP_OK;
-}
+
 
 ReceiverApp::ReceiverApp(SharedSonarData &sharedData, uint16_t* adcBuffer, int receiverIndex)
     : _sharedData(sharedData), _adcBuffer(adcBuffer), _receiverIndex(receiverIndex) {}
@@ -111,42 +99,49 @@ void ReceiverApp::performIQDemodulation(const int16_t *rawSamples) {
   if (!_demodI || !_demodQ)
     return;
 
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-    int16_t x = rawSamples[n];
-    switch (n & 3) {
-    case 0:
-      _demodI[n] = x;
-      _demodQ[n] = 0;
-      break;
-    case 1:
-      _demodI[n] = 0;
-      _demodQ[n] = -x;
-      break;
-    case 2:
-      _demodI[n] = -x;
-      _demodQ[n] = 0;
-      break;
-    case 3:
-      _demodI[n] = 0;
-      _demodQ[n] = x;
-      break;
-    }
+  ae_int16x2* pDemodI = (ae_int16x2*)_demodI;
+  ae_int16x2* pDemodQ = (ae_int16x2*)_demodQ;
+  const ae_int16x2* pRaw = (const ae_int16x2*)rawSamples; // Căn chỉnh bộ nhớ 4-byte
+
+  constexpr int SAMPLES_PER_REGISTER = sizeof(ae_int16x2) / sizeof(int16_t);
+
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES; n += Constant::DEMOD_SAMPLE_PERIOD) {
+    ae_int16x2 r01 = pRaw[n / SAMPLES_PER_REGISTER];     // Chứa [ x1 | x0 ]
+    ae_int16x2 r23 = pRaw[n / SAMPLES_PER_REGISTER + 1]; // Chứa [ x3 | x2 ]
+    
+    int16_t x0 = AE_MOV2X16_0(r01);
+    int16_t x1 = AE_MOV2X16_1(r01);
+    int16_t x2 = AE_MOV2X16_0(r23);
+    int16_t x3 = AE_MOV2X16_1(r23);
+    
+    pDemodI[n / SAMPLES_PER_REGISTER] = AE_MOVDA16(0, x0);
+    pDemodI[n / SAMPLES_PER_REGISTER + 1] = AE_MOVDA16(0, -x2);
+    
+    pDemodQ[n / SAMPLES_PER_REGISTER] = AE_MOVDA16(-x1, 0);
+    pDemodQ[n / SAMPLES_PER_REGISTER + 1] = AE_MOVDA16(x3, 0);
   }
 
-  // 4-sample moving average filter using rolling sums without dynamic memory
+  // Bộ lọc trung bình trượt 4 mẫu sử dụng con trỏ dịch liên tục
   int32_t sumI = 0, sumQ = 0;
-  for (int n = 0; n < (int)Constant::ADC_SAMPLES + 3; ++n) {
+  int16_t* pInI = _demodI;
+  int16_t* pInQ = _demodQ;
+  int16_t* pOutI = _demodI;
+  int16_t* pOutQ = _demodQ;
+  int16_t* pSubI = _demodI;
+  int16_t* pSubQ = _demodQ;
+
+  for (int n = 0; n < (int)Constant::ADC_SAMPLES + (Constant::DEMOD_AVG_LEN - 1); ++n) {
     if (n < (int)Constant::ADC_SAMPLES) {
-      sumI += _demodI[n];
-      sumQ += _demodQ[n];
+      sumI += *pInI++;
+      sumQ += *pInQ++;
     }
-    if (n >= 4) {
-      sumI -= _demodI[n - 4];
-      sumQ -= _demodQ[n - 4];
+    if (n >= Constant::DEMOD_AVG_LEN) {
+      sumI -= *pSubI++;
+      sumQ -= *pSubQ++;
     }
-    if (n >= 3 && (n - 3) < (int)Constant::ADC_SAMPLES) {
-      _demodI[n - 3] = (int16_t)(sumI >> 2);
-      _demodQ[n - 3] = (int16_t)(sumQ >> 2);
+    if (n >= (Constant::DEMOD_AVG_LEN - 1) && (n - (Constant::DEMOD_AVG_LEN - 1)) < (int)Constant::ADC_SAMPLES) {
+      *pOutI++ = (int16_t)(sumI >> 2); // dịch 2 bit tương đương chia cho DEMOD_AVG_LEN = 4
+      *pOutQ++ = (int16_t)(sumQ >> 2);
     }
   }
 }
@@ -220,14 +215,21 @@ void ReceiverApp::performMatchedFiltering(int pulseIdx) {
     int16_t* ch1_Q = getChannelTempOutQ(1, _sharedData);
 
     for (int n = 0; n < (int)Constant::ADC_SAMPLES; ++n) {
-      int32_t sumI = (int32_t)ch0_I[n] + ch1_I[n];
-      int32_t sumQ = (int32_t)ch0_Q[n] + ch1_Q[n];
-      _sharedData.matrixSum_I[pulseIdx][n] = (int16_t)constrain(sumI >> 1, Constant::Q15_MIN, Constant::Q15_MAX);
-      _sharedData.matrixSum_Q[pulseIdx][n] = (int16_t)constrain(sumQ >> 1, Constant::Q15_MIN, Constant::Q15_MAX);
+      ae_int16x2 ch0 = AE_MOVDA16(ch0_Q[n], ch0_I[n]);
+      ae_int16x2 ch1 = AE_MOVDA16(ch1_Q[n], ch1_I[n]);
+      ae_int16x2 sum = AE_ADD16(ch0, ch1);
+      ae_int16x2 diff = AE_SUB16(ch0, ch1);
 
+      int16_t sumI_val = AE_MOV2X16_0(sum);
+      int16_t sumQ_val = AE_MOV2X16_1(sum);
+      int16_t diffI_val = AE_MOV2X16_0(diff);
+      int16_t diffQ_val = AE_MOV2X16_1(diff);
 
-      int32_t diffI = (int32_t)ch0_I[n] - ch1_I[n];
-      int32_t diffQ = (int32_t)ch0_Q[n] - ch1_Q[n];
+      _sharedData.matrixSum_I[pulseIdx][n] = sumI_val >> 1;
+      _sharedData.matrixSum_Q[pulseIdx][n] = sumQ_val >> 1;
+
+      int32_t diffI = diffI_val;
+      int32_t diffQ = diffQ_val;
       int32_t diffSq = (diffI * diffI + diffQ * diffQ) >> 4;
       int16_t diffMag = (int16_t)constrain(isqrt32(diffSq), 0, Constant::Q15_MAX);
 

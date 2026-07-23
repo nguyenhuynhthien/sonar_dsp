@@ -16,12 +16,16 @@ constexpr uint16_t ADC_RESOLUTION_MAX = 4095;
 constexpr float ADC_DC_OFFSET = 2048.0f;
 constexpr uint8_t DAC_DC_BIAS = 127;
 constexpr size_t SLOW_TIME_LEN = 16;
-constexpr size_t DOPPLER_FFT_LEN = 16;
+constexpr size_t DOPPLER_FFT_LEN = 8;
 constexpr float CPU_CYCLES_PER_SAMPLE_FACTOR = 6.25f;
 constexpr float SAMPLING_CALIBRATION_FACTOR = 1.10f;
 constexpr float SPEED_OF_SOUND = 343.0f; // Speed of sound in air in m/s
 
 // Q15 fixed-point DSP constants
+constexpr int Q15_SHIFT = 15;
+constexpr int32_t COS_PI_4_Q15 = 23170; // cos(pi/4) = 0.7071 in Q15 format
+constexpr int DEMOD_SAMPLE_PERIOD = 4; // Period of I/Q carrier modulation (4 samples per period)
+constexpr int DEMOD_AVG_LEN = 4; // Moving average filter length
 constexpr int16_t Q15_MAX = 32767;
 constexpr int16_t Q15_MIN = -32768;
 constexpr int16_t Q15_DAC_SCALE = 256;
