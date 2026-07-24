@@ -72,30 +72,19 @@ void TransmitterApp::run() {
         taskEXIT_CRITICAL(&_sharedData.spinlock);
 
         if (_sharedData.rxTaskHandle != nullptr) {
+            // Clear any pending notifications
+            ulTaskNotifyTake(pdTRUE, 0);
             xTaskNotifyGive(_sharedData.rxTaskHandle);
         }
 
-        // 2. Wait for Core 1: on Pulse 7, wait for the entire step to complete, otherwise wait for Rx1/Rx2
-        unsigned long waitStart = millis();
-        if (currentPulse == 7) {
-            while (!_sharedData.stepComplete && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
-                vTaskDelay(1);
-            }
-        } else {
-            while (_sharedData.processingDone != 3 && (millis() - waitStart) < Constant::TX_RESPONSE_TIMEOUT_MS) {
-                vTaskDelay(1);
-            }
-        }
-        unsigned long waitRxTime = millis() - waitStart;
+        // Wait for Core 1 using task notification (0% CPU, instant wakeup)
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(Constant::TX_RESPONSE_TIMEOUT_MS));
 
         // Wait for ScannerTask to process the step and clear requestServoStep
         unsigned long waitStart2 = millis();
         while (_sharedData.requestServoStep && (millis() - waitStart2) < Constant::TX_RESPONSE_TIMEOUT_MS) {
             vTaskDelay(1); // Yield CPU to let the lower-priority ScannerTask run
         }
-        unsigned long waitServoTime = millis() - waitStart2;
-
-
 
         // Clear processingDone for the next cycle
         taskENTER_CRITICAL(&_sharedData.spinlock);
@@ -120,9 +109,6 @@ void TransmitterApp::run() {
             while ((micros() - startMicros) < periodUs) {
                 delayMicroseconds(10);
             }
-        } else {
-            // Force 1 tick delay to prevent task watchdog starvation on Core 0
-            vTaskDelay(1);
         }
     } else {
         // Idle state

@@ -129,7 +129,7 @@ void setup() {
         }
       },
       "TxTask", 4096, nullptr, Constant::TASK_PRIORITY,
-      nullptr,
+      &sharedData.waveSendTaskHandle,
       0 // Pinned to Core 0
   );
   Serial.printf("TxTask creation: %s\n", (t1 == pdPASS) ? "SUCCESS" : "FAILED");
@@ -205,7 +205,6 @@ void setup() {
       [](void *param) {
         Serial.println("Sync and DSP Task (Core 1) started.");
         while (true) {
-          // 1. SyncSignalApp waits for trigger, prepares buffers, runs ADC/DAC sync loop
           syncApp.run();
           rxApp1.run();
           rxApp2.run();

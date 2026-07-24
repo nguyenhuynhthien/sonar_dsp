@@ -231,4 +231,9 @@ void CombineReceiverApp::run() {
         _sharedData.stepComplete = true;
         taskEXIT_CRITICAL(&_sharedData.spinlock);
     }
+
+    // Notify Transmitter task that receiver processing is complete for this pulse
+    if (_sharedData.waveSendTaskHandle != nullptr) {
+        xTaskNotifyGive(_sharedData.waveSendTaskHandle);
+    }
 }
